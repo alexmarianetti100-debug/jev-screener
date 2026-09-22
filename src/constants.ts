@@ -147,6 +147,17 @@ export const EXPLAIN_PERIODS_PER_METRIC = 6;
 /** Default `limit` for screen output. Truncates display; never selects. */
 export const DEFAULT_SCREEN_LIMIT = 25;
 
+// ── Local view ────────────────────────────────────────────────────────────────
+
+/**
+ * Where the read-only view listens.
+ *
+ * Loopback, not 0.0.0.0. There is no auth, because there is nothing to authenticate
+ * against and a login would imply this is safe to expose. It is not.
+ */
+export const UI_HOST = "127.0.0.1";
+export const UI_PORT = 7373;
+
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
 export const DATA_DIR = "data";

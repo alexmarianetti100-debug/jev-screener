@@ -16,7 +16,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --test src/**/*.test.ts",
-    "demo": "node --env-file-if-exists=.env src/cli.ts screen demo"
+    "demo": "node --env-file-if-exists=.env src/cli.ts screen demo",
+    "ui": "node --max-old-space-size=8192 --env-file-if-exists=.env src/ui-server.ts"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.5-r.5",

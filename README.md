@@ -16,6 +16,28 @@ good, you will not find one — that is the design, not an omission.
 million real observations taught, and the two experiments measuring whether the model judges the
 evidence or the company.
 
+## Looking at it
+
+```sh
+npm run ui        # http://127.0.0.1:7373
+```
+
+A read-only local view of the last run: all 985 picks, filterable by ticker, sector or
+evidence, sortable on every column, with a score histogram that makes the compression at
+the top visible at a glance. Clicking a row opens its provenance — every computed metric
+with the date it became knowable, then the raw observations newest-first with the XBRL
+tag that actually matched.
+
+That last view is the one thing a terminal was genuinely bad at, and the reason this
+exists at all. It is also where the point-in-time discipline becomes obvious rather than
+theoretical: prices carry one `knownAt`, the fundamentals beside them carry another.
+
+Node's own http server, one inlined page, no framework and no build step. Three
+constraints: it binds to loopback because there is no auth and a login would imply it
+were safe to expose; every mutation verb is refused before routing, so **a page load
+cannot start a screen**; and it calls the same readers the CLI and the MCP server call,
+so the page cannot quietly disagree with the terminal.
+
 ## See it without credentials
 
 ```sh

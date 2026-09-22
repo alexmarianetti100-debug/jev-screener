@@ -190,6 +190,8 @@ test("the only tunable numbers live in constants.ts, and are operational", async
     "PRICE_BACKFILL_DAYS",
     "PRICE_SOURCE_FAILURE_LIMIT",
     "QUESTION_SET_VERSION",
+    "UI_HOST",
+    "UI_PORT",
   ]);
 });
 

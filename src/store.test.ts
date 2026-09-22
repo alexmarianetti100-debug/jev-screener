@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cik, isoDate, observation, ticker, type Observation } from "./observation.ts";
-import { openStore, type Store } from "./store.ts";
+import { lockError, openStore, type Store } from "./store.ts";
 
 const ACME = ticker("ACME");
 const BETA = ticker("BETA");
@@ -172,4 +172,29 @@ test("appending nothing is a no-op", async () => {
     assert.equal(await store.appendObservations([]), 0);
     assert.equal(await store.observationCount(), 0);
   });
+});
+
+test("a second writer gets an actionable message, not a raw DuckDB error", () => {
+  // DuckDB's lock is cross-process, so this cannot be provoked in-process — it was
+  // observed live when a second `npm run screen` bounced off a running one. What is
+  // testable, and what actually matters, is that the raw error becomes actionable.
+  const raw = new Error(
+    'IO Error: Could not set lock on file "data/jev.duckdb": Conflicting lock is held in ' +
+      "/Users/x/.local/node/bin/node (PID 40008) by user x. See also https://duckdb.org/docs/stable/connect/concurrency",
+  );
+
+  const friendly = lockError("data/jev.duckdb", raw);
+
+  assert.match(friendly.message, /already open by another process \(PID 40008\)/);
+  assert.match(friendly.message, /single writer/);
+  assert.match(friendly.message, /one ingest, screen or MCP server/);
+  assert.match(friendly.message, /ps -p 40008/);
+  assert.equal(friendly.cause, raw, "the original error is preserved for debugging");
+});
+
+test("a lock error with no PID still reads sensibly", () => {
+  const friendly = lockError("data/jev.duckdb", new Error("Could not set lock on file"));
+
+  assert.match(friendly.message, /already open by another process\./);
+  assert.equal(/PID|ps -p/.test(friendly.message), false);
 });

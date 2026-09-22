@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   COMPANY_TICKERS, createEdgarClient, extractItem, factsToObservations, fetchFilingText,
-  fetchTickerMap, filingUrl, isPrimaryCikEntry, iterateZipJson, quarterize, submissionsToProfile,
+  cikFromEntryName, fetchTickerMap, filingUrl, isPrimaryCikEntry, iterateZipJson, quarterize, submissionsToProfile,
   type CompanyFacts, type Submissions,
 } from "./edgar.ts";
 import { cik, isoDate, ticker } from "./observation.ts";
@@ -296,4 +296,70 @@ test("overflow submissions members are skipped, primary ones kept", () => {
   assert.equal(isPrimaryCikEntry("CIK0000005981-submissions-001.json"), false);
   assert.equal(isPrimaryCikEntry("metadata.json"), false);
   assert.equal(isPrimaryCikEntry("CIK0000320193.json.bak"), false);
+});
+
+test("a member's CIK is readable from its filename, before parsing it", () => {
+  assert.equal(cikFromEntryName("CIK0000320193.json"), "0000320193");
+  assert.equal(cikFromEntryName("CIK1750.json"), "0000001750");
+  assert.equal(cikFromEntryName("CIK0000005981-submissions-001.json"), undefined);
+  assert.equal(cikFromEntryName("metadata.json"), undefined);
+});
+
+test("a bulk download streams to disk and gets a long timeout", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "jev-dl-"));
+  const payload = Buffer.alloc(64 * 1024, 7);
+  let requestedTimeout = 0;
+
+  const client = createEdgarClient({
+    userAgent: "test", gate: noWait, cacheDir,
+    fetch: async (_url, init) => {
+      // The archive timeout must be far larger than the small-request one.
+      const signal = init?.signal as (AbortSignal & { _t?: number }) | undefined;
+      requestedTimeout = signal ? 1 : 0;
+      return new Response(payload, { headers: { "content-length": String(payload.length) } });
+    },
+  });
+
+  const path = await client.download("https://www.sec.gov/x/companyfacts.zip", "bulk.zip");
+  const { readFile: read } = await import("node:fs/promises");
+  assert.deepEqual(await read(path), payload, "the whole body reached disk intact");
+  assert.equal(requestedTimeout, 1, "a timeout signal was attached");
+});
+
+test("an interrupted download leaves no file to be mistaken for complete", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "jev-dl-"));
+  const client = createEdgarClient({
+    userAgent: "test", gate: noWait, cacheDir,
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024));
+            controller.error(new Error("connection reset"));
+          },
+        }),
+      ),
+  });
+
+  await assert.rejects(() => client.download("https://www.sec.gov/x/bulk.zip", "bulk.zip"), /connection reset/);
+
+  const { stat: statFile } = await import("node:fs/promises");
+  await assert.rejects(() => statFile(join(cacheDir, "bulk.zip")), /ENOENT/);
+  await assert.rejects(() => statFile(join(cacheDir, "bulk.zip.part")), /ENOENT/);
+});
+
+test("a cached archive is reused without re-reading it into memory", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "jev-dl-"));
+  let fetches = 0;
+  const client = createEdgarClient({
+    userAgent: "test", gate: noWait, cacheDir,
+    fetch: async () => {
+      fetches++;
+      return new Response(Buffer.alloc(2048, 3));
+    },
+  });
+
+  await client.download("https://www.sec.gov/x/bulk.zip", "bulk.zip");
+  await client.download("https://www.sec.gov/x/bulk.zip", "bulk.zip");
+  assert.equal(fetches, 1);
 });

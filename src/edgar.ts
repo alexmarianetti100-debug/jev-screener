@@ -13,12 +13,18 @@
  */
 
 import { createHash } from "node:crypto";
-import { open as openFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { open as openFile, mkdir, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { inflateRaw } from "node:zlib";
 import { promisify } from "node:util";
-import { CACHE_DIR, EDGAR_REQUESTS_PER_SECOND, FILING_EXCERPT_CHARS, HTTP_TIMEOUT_MS } from "./constants.ts";
+import {
+  BULK_DOWNLOAD_TIMEOUT_MS, CACHE_DIR, DOWNLOAD_PROGRESS_INTERVAL_MS,
+  EDGAR_REQUESTS_PER_SECOND, FILING_EXCERPT_CHARS, HTTP_TIMEOUT_MS,
+} from "./constants.ts";
 import {
   cik as toCik, isoDate, observation, ticker as toTicker,
   type CIK, type ISODate, type Observation, type Ticker,
@@ -63,6 +69,8 @@ export interface EdgarOptions {
   readonly cacheDir?: string;
   /** Rate gate override, for tests that must not sleep. */
   readonly gate?: () => Promise<void>;
+  /** Progress reporting for the multi-gigabyte bulk downloads. */
+  readonly log?: (message: string) => void;
 }
 
 export interface EdgarClient {
@@ -79,11 +87,13 @@ export function createEdgarClient(options: EdgarOptions = {}): EdgarClient {
   // The throttle lives here, not at the call sites, so no caller can forget it.
   const gate = options.gate ?? rateLimiter(EDGAR_REQUESTS_PER_SECOND);
 
-  const request = async (url: string): Promise<Response> => {
+  const log = options.log ?? (() => {});
+
+  const request = async (url: string, timeoutMs = HTTP_TIMEOUT_MS): Promise<Response> => {
     await gate();
     const response = await doFetch(url, {
       headers: { "User-Agent": userAgent, "Accept-Encoding": "gzip, deflate" },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) throw new Error(`EDGAR ${response.status} for ${url}`);
     return response;
@@ -96,17 +106,53 @@ export function createEdgarClient(options: EdgarOptions = {}): EdgarClient {
     async getText(url: string): Promise<string> {
       return (await request(url)).text();
     },
+    /**
+     * Fetch a bulk archive to disk.
+     *
+     * Streamed rather than buffered: these are 1.3–1.5 GB, and `arrayBuffer()` would
+     * hold the whole thing in memory before a byte reached disk. Written to a
+     * `.part` file and renamed on success, so an interrupted download can never be
+     * mistaken for a complete one on the next run.
+     */
     async download(url: string, filename: string): Promise<string> {
       await mkdir(cacheDir, { recursive: true });
       const path = join(cacheDir, filename);
-      try {
-        await readFile(path, { flag: "r" });
-        return path; // already have it
-      } catch {
-        // fall through and fetch
+      const partial = `${path}.part`;
+
+      // stat, not read: the point is existence, and the file is over a gigabyte.
+      const existing = await stat(path).catch(() => undefined);
+      if (existing?.isFile() && existing.size > 0) {
+        log(`  reusing cached ${filename} (${(existing.size / 2 ** 30).toFixed(2)} GB)`);
+        return path;
       }
-      const response = await request(url);
-      await writeFile(path, Buffer.from(await response.arrayBuffer()));
+
+      const response = await request(url, BULK_DOWNLOAD_TIMEOUT_MS);
+      if (!response.body) throw new Error(`EDGAR returned no body for ${url}`);
+
+      const total = Number(response.headers.get("content-length")) || 0;
+      let received = 0;
+      let lastLogged = Date.now();
+
+      const counter = async function* (source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+        for await (const chunk of source) {
+          received += chunk.byteLength;
+          if (Date.now() - lastLogged >= DOWNLOAD_PROGRESS_INTERVAL_MS) {
+            lastLogged = Date.now();
+            const done = (received / 2 ** 30).toFixed(2);
+            log(total ? `  ${done} / ${(total / 2 ** 30).toFixed(2)} GB` : `  ${done} GB`);
+          }
+          yield chunk;
+        }
+      };
+
+      try {
+        await pipeline(Readable.fromWeb(response.body), counter, createWriteStream(partial));
+      } catch (error) {
+        await unlink(partial).catch(() => undefined);
+        throw error;
+      }
+      await rename(partial, path);
+      log(`  ${filename}: ${(received / 2 ** 30).toFixed(2)} GB`);
       return path;
     },
   };
@@ -240,6 +286,19 @@ export async function readZipEntry(handle: FileHandle, entry: ZipEntry): Promise
  * field, so parsing them costs time and yields nothing.
  */
 export const isPrimaryCikEntry = (name: string): boolean => /^CIK\d+\.json$/.test(name);
+
+/**
+ * The CIK an archive member describes, from its filename alone.
+ *
+ * Lets the ingester decide whether it cares about a member *before* parsing it.
+ * submissions.zip holds ~991,000 documents and only ~10,000 filers have a ticker,
+ * so skipping on the name rather than on the parsed body avoids roughly 980,000
+ * pointless JSON parses.
+ */
+export function cikFromEntryName(name: string): CIK | undefined {
+  const match = /^CIK(\d+)\.json$/.exec(name);
+  return match?.[1] ? toCik(match[1]) : undefined;
+}
 
 /** Stream a ZIP's entries, parsing each as JSON. Skips entries that fail to parse. */
 export async function* iterateZipJson<T>(

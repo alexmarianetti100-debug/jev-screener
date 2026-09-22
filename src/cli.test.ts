@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createClient } from "./client.ts";
-import { coverageStatus, explainPick, runIngest, runScreen } from "./cli.ts";
+import { coverageStatus, explainPick, ingestPrices, runIngest, runScreen } from "./cli.ts";
 import type { EdgarClient } from "./edgar.ts";
 import { isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
 import type { PriceClient } from "./prices.ts";
@@ -474,6 +474,84 @@ test("screening before ingest fails with a usable message", async () => {
   const store = await openStore(":memory:");
   try {
     await assert.rejects(() => runScreen({ store }), /run `npm run ingest` first/);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a dead price source is abandoned, and the screen still produces picks", async () => {
+  const { store, edgar } = await seeded();
+  try {
+    let attempts = 0;
+    const deadPrices: PriceClient = {
+      async closes(): Promise<Observation[]> {
+        attempts++;
+        throw new Error("fetch failed");
+      },
+    };
+
+    const report = await runScreen({ store, edgar, prices: deadPrices, client: stubJev().client });
+
+    // Only three survivors here, so the breaker's limit is never reached — what
+    // matters is that a failing source does not stop the pipeline.
+    assert.ok(attempts > 0, "prices were attempted");
+    assert.deepEqual(report.picks.map((p) => String(p.entity)), ["GOOD"]);
+    assert.equal(report.judged, 2, "judgment ran without any price data");
+  } finally {
+    await store.close();
+  }
+});
+
+test("the breaker stops asking a source that keeps failing", async () => {
+  const store = await openStore(":memory:");
+  try {
+    const { PRICE_SOURCE_FAILURE_LIMIT } = await import("./constants.ts");
+    const tickers = Array.from({ length: PRICE_SOURCE_FAILURE_LIMIT + 200 }, (_, i) => ticker(`T${i}`));
+
+    let attempts = 0;
+    const dead: PriceClient = {
+      async closes(): Promise<Observation[]> {
+        attempts++;
+        throw new Error("fetch failed");
+      },
+    };
+
+    const report = await ingestPrices(store, dead, tickers, () => {});
+
+    assert.equal(report.abandoned, true);
+    assert.equal(report.stored, 0);
+    assert.equal(attempts, PRICE_SOURCE_FAILURE_LIMIT, "stopped at the limit, not after all 220");
+    assert.equal(report.attempted, PRICE_SOURCE_FAILURE_LIMIT);
+  } finally {
+    await store.close();
+  }
+});
+
+test("an intermittent source is not abandoned — the run is about consecutive failures", async () => {
+  const store = await openStore(":memory:");
+  try {
+    const { PRICE_SOURCE_FAILURE_LIMIT } = await import("./constants.ts");
+    const tickers = Array.from({ length: PRICE_SOURCE_FAILURE_LIMIT * 3 }, (_, i) => ticker(`T${i}`));
+
+    let n = 0;
+    const flaky: PriceClient = {
+      async closes(symbol: Ticker): Promise<Observation[]> {
+        // Fails most of the time, but never `LIMIT` times in a row.
+        if (++n % PRICE_SOURCE_FAILURE_LIMIT !== 0) throw new Error("transient");
+        return [{
+          value: 10, metric: "close", entity: symbol,
+          validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
+          source: "stooq", reliability: "market",
+        }];
+      },
+    };
+
+    const report = await ingestPrices(store, flaky, tickers, () => {});
+
+    assert.equal(report.abandoned, false, "a flaky source is still worth finishing");
+    assert.equal(report.attempted, tickers.length);
+    assert.ok(report.stored > 0);
+    assert.ok(report.failed > 0);
   } finally {
     await store.close();
   }

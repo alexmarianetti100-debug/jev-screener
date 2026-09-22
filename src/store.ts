@@ -120,10 +120,31 @@ export interface Store {
 const asString = (v: unknown): string => (v === null || v === undefined ? "" : String(v));
 const asNumber = (v: unknown): number => (typeof v === "bigint" ? Number(v) : Number(v ?? 0));
 
+/**
+ * DuckDB takes a single write lock per database file, so one screen, ingest or MCP
+ * server at a time. The raw error names a PID and links to the docs but does not say
+ * what the caller should do, so it is rewritten into something actionable.
+ */
+export function lockError(path: string, cause: Error): Error {
+  const pid = /PID (\d+)/.exec(cause.message)?.[1];
+  return new Error(
+    `${path} is already open by another process${pid ? ` (PID ${pid})` : ""}. ` +
+      "DuckDB allows a single writer, so only one ingest, screen or MCP server can run at a time. " +
+      `Wait for it to finish${pid ? `, or check it with \`ps -p ${pid}\`` : ""}.`,
+    { cause },
+  );
+}
+
 export async function openStore(path: string = DB_PATH): Promise<Store> {
   if (path !== ":memory:") await mkdir(dirname(path) || DATA_DIR, { recursive: true });
 
-  const instance = await DuckDBInstance.create(path);
+  let instance: DuckDBInstance;
+  try {
+    instance = await DuckDBInstance.create(path);
+  } catch (error) {
+    const message = (error as Error).message ?? "";
+    throw /Could not set lock|Conflicting lock/i.test(message) ? lockError(path, error as Error) : error;
+  }
   const connection = await instance.connect();
   for (const statement of SCHEMA.split(";").map((s) => s.trim()).filter(Boolean)) {
     await connection.run(statement);

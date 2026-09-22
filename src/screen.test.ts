@@ -182,18 +182,22 @@ test("the only tunable numbers live in constants.ts, and are operational", async
   // Every constant must be one an operator could turn without deciding anything
   // about a company: throughput, spend, cadence, data availability, or display.
   assert.deepEqual(exported.sort(), [
+    "BULK_DOWNLOAD_TIMEOUT_MS",
     "CACHE_DIR",
     "CONTAMINATION_WINDOW_DAYS",
     "DATA_DIR",
     "DB_PATH",
     "DEFAULT_SCREEN_LIMIT",
+    "DOWNLOAD_PROGRESS_INTERVAL_MS",
     "EDGAR_REQUESTS_PER_SECOND",
     "FILING_EXCERPT_CHARS",
+    "FILING_FETCH_POOL_SIZE",
     "HTTP_TIMEOUT_MS",
     "INGEST_BATCH_SIZE",
     "JEV_POOL_SIZE",
     "MAX_ANNUAL_REPORT_AGE_MONTHS",
     "MIN_REVENUE_QUARTERS",
+    "PRICE_SOURCE_FAILURE_LIMIT",
     "QUESTION_SET_VERSION",
     "STOOQ_REQUESTS_PER_SECOND",
   ]);

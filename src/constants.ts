@@ -20,13 +20,41 @@ export const EDGAR_REQUESTS_PER_SECOND = 10;
 /** Stooq publishes no limit; this is deliberate politeness for a free service. */
 export const STOOQ_REQUESTS_PER_SECOND = 2;
 
-/** Give up on a single HTTP request after this long. */
+/**
+ * Consecutive price-source failures before this run stops asking.
+ *
+ * Stooq is a free service with no status page and no bulk endpoint. When it is down,
+ * 3,000 sequential doomed requests at 2/second is 25 minutes of waiting to learn
+ * something the first twenty already established. Prices are optional to the
+ * screener — multiples simply go missing — so giving up early and saying so beats
+ * stalling the pipeline.
+ */
+export const PRICE_SOURCE_FAILURE_LIMIT = 20;
+
+/** Give up on a single small HTTP request (JSON, one filing) after this long. */
 export const HTTP_TIMEOUT_MS = 60_000;
+
+/**
+ * Ceiling for a bulk archive download. The SEC archives are ~1.3–1.5 GB each, so
+ * the small-request timeout is off by orders of magnitude; on a slow link the real
+ * constraint is bandwidth, not server responsiveness.
+ */
+export const BULK_DOWNLOAD_TIMEOUT_MS = 45 * 60_000;
+
+/** Log download progress no more often than this, so a long fetch is not silent. */
+export const DOWNLOAD_PROGRESS_INTERVAL_MS = 10_000;
 
 // ── Spend and throughput ──────────────────────────────────────────────────────
 
 /** Concurrent in-flight jev calls. Throughput only; does not affect any answer. */
 export const JEV_POOL_SIZE = 8;
+
+/**
+ * Concurrent filing-text downloads. The adapter's 10/second gate still governs when
+ * requests *start*; this governs how many bodies are in flight, which is what matters
+ * when each document is several megabytes.
+ */
+export const FILING_FETCH_POOL_SIZE = 8;
 
 /** Observations buffered before a flush to DuckDB. Memory, not meaning. */
 export const INGEST_BATCH_SIZE = 50_000;

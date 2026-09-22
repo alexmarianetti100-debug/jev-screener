@@ -104,6 +104,44 @@ whose price has moved sharply carries a stale valuation until its next filing.
 A fully cached run touches neither Stooq nor EDGAR and needs no API key at all, which is what
 makes `screen_run` cheap enough to call from a conversation.
 
+## Observed behaviour on real data
+
+Measured on a live ingest, 2026-09-21:
+
+| | |
+| --- | --- |
+| Filers with a ticker | 8,046 |
+| Observations ingested | 3,112,272 |
+| Database size | 905 MB (+ 2.8 GB of cached archives) |
+| **Eligible universe** | **3,305** |
+| Biggest eligibility failures | too few revenue quarters (4,616), no 10-K (2,814), no operating cash flow (2,799), foreign issuer or fund (1,768) |
+| Slice + eligibility pass | ~10 s |
+| Triage | 3,098 input tokens/company, ~$0.00013 each |
+| Judgment | 9,824 input tokens/company, ~$0.00041 each |
+
+So a full triage sweep of the universe is about **$0.43**, and judging every survivor about
+**$1.30**. The cache means you pay that once per filing cycle, not per run.
+
+**Triage is currently too permissive.** On the live universe it advanced 3,173 of 3,305 — 96%.
+The `advance` criteria as written describe almost any company, so the cheap stage is not doing its
+job of keeping expensive calls off the whole universe. This is a question-wording problem, not a
+code one; fixing it means tightening the `drop` criterion so an unremarkable company drops by
+default, and bumping `QUESTION_SET_VERSION` (which invalidates the cached triage answers).
+
+**Two operational constraints worth knowing:**
+
+- **DuckDB takes a single write lock per file**, so one ingest, screen or MCP server at a time. A
+  second one fails fast with a message naming the holding PID.
+- **The price source can be unreachable.** Stooq has no status page, and during the live run it
+  was entirely unresponsive from this network. After `PRICE_SOURCE_FAILURE_LIMIT` consecutive
+  failures a run stops asking, records the reason, and continues without multiples — 3,000 doomed
+  requests at 2/second would otherwise be a 25-minute stall to learn what the first twenty
+  already established.
+
+  The visible consequence is instructive: with no prices, jev answered `sufficiency: thin` for
+  **every** company it judged. That is the `sufficiency` question doing exactly what it is for —
+  the model telling you its evidence was incomplete, rather than quietly scoring anyway.
+
 ## Four limitations, stated plainly
 
 **1. Triage sees no price.** Stooq has no bulk endpoint, so prices are fetched only for triage
@@ -182,6 +220,7 @@ npm run screen -- --as-of=2024-06-30 --allow-contaminated
 npm run screen -- explain --ticker=AAPL
 npm run screen -- coverage
 npm run mcp                         # MCP server on stdio
+                                    # (one writer at a time — see above)
 
 npm run check                       # is the key live and is jev reachable?
 npm test                            # offline; no network, no API key

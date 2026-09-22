@@ -16,11 +16,12 @@ import type { TypeSafeClient } from "@typesafe-ai/sdk";
 import { cacheKeyFor, throughCache } from "./cache.ts";
 import { createClient } from "./client.ts";
 import {
-  DEFAULT_SCREEN_LIMIT, INGEST_BATCH_SIZE, JEV_POOL_SIZE, QUESTION_SET_VERSION,
+  DEFAULT_SCREEN_LIMIT, FILING_FETCH_POOL_SIZE, INGEST_BATCH_SIZE, JEV_POOL_SIZE,
+  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION,
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
-  fetchFilingText, fetchTickerMap, isPrimaryCikEntry, iterateZipJson, submissionsToProfile,
+  cikFromEntryName, fetchFilingText, fetchTickerMap, iterateZipJson, submissionsToProfile,
   type CompanyFacts, type EdgarClient, type Submissions,
 } from "./edgar.ts";
 import { computeMetrics, type DerivedMetric, type MetricRow } from "./metrics.ts";
@@ -68,7 +69,7 @@ export interface IngestReport {
  */
 export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   const log = options.log ?? (() => {});
-  const edgar = options.edgar ?? createEdgarClient();
+  const edgar = options.edgar ?? createEdgarClient({ log });
 
   log("fetching ticker map…");
   const tickerMap = await fetchTickerMap(edgar);
@@ -78,8 +79,15 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   const submissionsPath = await edgar.download(SUBMISSIONS_ZIP, cacheName(SUBMISSIONS_ZIP));
   await options.store.recordFetch("edgar", "submissions", true, submissionsPath);
 
+  // Only filers with a ticker can be screened, and we already know which those are.
+  const wantedCiks = new Set(tickerMap.keys());
+  const isWanted = (name: string): boolean => {
+    const cik = cikFromEntryName(name);
+    return cik !== undefined && wantedCiks.has(cik);
+  };
+
   const profiles: FilerProfile[] = [];
-  for await (const { data } of iterateZipJson<Submissions>(submissionsPath, isPrimaryCikEntry)) {
+  for await (const { data } of iterateZipJson<Submissions>(submissionsPath, isWanted)) {
     const key = toCik(data.cik ?? 0);
     const profile = submissionsToProfile(data, tickerMap.get(key));
     if (profile) profiles.push(profile);
@@ -97,7 +105,7 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   let skipped = 0;
   let batch: Observation[] = [];
 
-  for await (const { data } of iterateZipJson<CompanyFacts>(factsPath, isPrimaryCikEntry)) {
+  for await (const { data } of iterateZipJson<CompanyFacts>(factsPath, isWanted)) {
     const profile = byCik.get(toCik(data.cik ?? 0));
     if (!profile) {
       skipped++; // no ticker: not something we can screen
@@ -120,31 +128,61 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const slice = await options.store.sliceAsOf(asOf);
     const universe = buildUniverse(profiles, slice, asOf);
     log(`refreshing prices for ${universe.eligible.length} eligible companies…`);
-    priceObservations = await ingestPrices(options.store, prices, universe.eligible.map((v) => v.entity), log);
+    priceObservations = (await ingestPrices(options.store, prices, universe.eligible.map((v) => v.entity), log)).stored;
   }
 
   return { filers: profiles.length, observations, priceObservations, skipped };
 }
 
-/** Fetch and store daily closes for the given tickers. */
-async function ingestPrices(
+export interface PriceIngestReport {
+  readonly stored: number;
+  readonly attempted: number;
+  readonly failed: number;
+  /** True when the run gave up on the source rather than finishing the list. */
+  readonly abandoned: boolean;
+}
+
+/**
+ * Fetch and store daily closes, giving up if the source is clearly down.
+ *
+ * Sequential by necessity: the 2/second politeness gate, not latency, is the
+ * constraint, so concurrency would buy nothing. The circuit breaker is what keeps a
+ * dead source from turning that into a 25-minute stall.
+ */
+export async function ingestPrices(
   store: Store,
   prices: PriceClient,
   tickers: readonly Ticker[],
   log: (message: string) => void,
-): Promise<number> {
+): Promise<PriceIngestReport> {
   let stored = 0;
+  let attempted = 0;
+  let failed = 0;
+  let consecutiveFailures = 0;
+
   for (const ticker of tickers) {
+    attempted++;
     try {
       const rows = await prices.closes(ticker);
       stored += await store.appendObservations(rows);
       await store.recordFetch("stooq", "prices", true, ticker);
+      consecutiveFailures = 0;
     } catch (error) {
+      failed++;
+      consecutiveFailures++;
       await store.recordFetch("stooq", "prices", false, `${ticker}: ${(error as Error).message}`);
-      log(`  price fetch failed for ${ticker}: ${(error as Error).message}`);
+
+      if (consecutiveFailures >= PRICE_SOURCE_FAILURE_LIMIT) {
+        log(
+          `  price source unreachable after ${consecutiveFailures} consecutive failures ` +
+            `(${attempted} of ${tickers.length} attempted) — continuing without multiples`,
+        );
+        return { stored, attempted, failed, abandoned: true };
+      }
     }
   }
-  return stored;
+
+  return { stored, attempted, failed, abandoned: false };
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -273,7 +311,13 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     // batch, which is the one thing the peer context exists to prevent.
     const survivors = survivorRows.map((row) => row.entity);
     log(`fetching prices for ${survivors.length} survivors…`);
-    await ingestPrices(store, options.prices ?? createPriceClient(), survivors, log);
+    const priceReport = await ingestPrices(store, options.prices ?? createPriceClient(), survivors, log);
+    if (priceReport.abandoned) {
+      failures.push(
+        `price source gave up after ${priceReport.failed} failures; ` +
+          `${survivors.length - priceReport.attempted} tickers unattempted, valuation multiples absent`,
+      );
+    }
 
     const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
     pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector));
@@ -282,20 +326,34 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     // Filing text, on the other hand, is only worth fetching for what we will ask
     // about: ~15,000 tokens of MD&A that a cache hit would never read.
     log(`fetching filing text for ${stale.length} companies…`);
-    const edgar = options.edgar ?? createEdgarClient();
-    for (const index of stale) {
-      const row = pricedRows[index]!;
-      const profile = profileOf.get(row.entity);
-      const filing = profile ? latestFiling(profile, ["10-K", "10-K/A", "10-Q"], asOf) : undefined;
-      if (!profile || !filing) continue;
-      try {
-        filings.set(row.entity, await fetchFilingText(edgar, profile.cik, filing));
-        await store.recordFetch("edgar", "filing-text", true, `${row.entity} ${filing.accession}`);
-      } catch (error) {
-        await store.recordFetch("edgar", "filing-text", false, `${row.entity}: ${(error as Error).message}`);
-        failures.push(`filing text ${row.entity}: ${(error as Error).message}`);
-      }
-    }
+    const edgar = options.edgar ?? createEdgarClient({ log });
+
+    // Pooled, not sequential: the adapter's rate gate already spaces request starts,
+    // so serialising here would only add each document's download time to the total.
+    // At several megabytes a filing, that is the difference between minutes and hours.
+    await runPool(
+      stale,
+      async (index) => {
+        const row = pricedRows[index]!;
+        const profile = profileOf.get(row.entity);
+        const filing = profile ? latestFiling(profile, ["10-K", "10-K/A", "10-Q"], asOf) : undefined;
+        if (!profile || !filing) return;
+        try {
+          filings.set(row.entity, await fetchFilingText(edgar, profile.cik, filing));
+          await store.recordFetch("edgar", "filing-text", true, `${row.entity} ${filing.accession}`);
+        } catch (error) {
+          await store.recordFetch("edgar", "filing-text", false, `${row.entity}: ${(error as Error).message}`);
+          failures.push(`filing text ${row.entity}: ${(error as Error).message}`);
+        }
+      },
+      {
+        size: FILING_FETCH_POOL_SIZE,
+        ...(options.signal ? { signal: options.signal } : {}),
+        onProgress: ({ done, total }) => {
+          if (done % 100 === 0 || done === total) log(`  filings ${done}/${total}`);
+        },
+      },
+    );
   }
 
   log(`judging ${survivorRows.length} companies (${stale.length} fresh, ${survivorRows.length - stale.length} cached)…`);

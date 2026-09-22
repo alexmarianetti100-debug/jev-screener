@@ -37,6 +37,7 @@ import {
   type FilingExcerpt, type Judged, type JudgmentResult, type Pick, type RunStamp,
 } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
+import { gradeRun, type GradeReport, type RosterEntry } from "./grade.ts";
 import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
 
 /** Metrics that exist only once a price has been fetched. */
@@ -487,6 +488,19 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
   }
   const picks = assemble(judged);
 
+  // Every company judged, not only the ones picked. Grading needs what jev passed
+  // over — a bucket of picks going up says nothing on its own, because the market
+  // goes up. The run is the evidence, so it has to be self-contained: reconstructing
+  // this later from a cache that has moved on is not the same thing.
+  const roster: RosterEntry[] = judged.map((row) => ({
+    entity: String(row.entity),
+    label: row.label,
+    sector: row.sector,
+    verdict: row.result.answers.verdict.choice,
+    attractiveness: row.result.answers.attractiveness.score,
+    ...(typeof row.metrics.fcfConversion === "number" ? { fcfConversion: row.metrics.fcfConversion } : {}),
+  }));
+
   const report: ScreenReport = {
     runId: randomUUID(),
     stamp,
@@ -507,7 +521,7 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     asOf,
     questionSetVersion: QUESTION_SET_VERSION,
     contaminated: stamp.contaminated,
-    payload: { ...report, picks, universeReasons: universe.reasonCounts },
+    payload: { ...report, picks, roster, universeReasons: universe.reasonCounts },
   });
 
   return report;
@@ -692,6 +706,26 @@ export function horizonLabel(band: number): string {
   return low === high ? low : `${low} → ${high}`;
 }
 
+/**
+ * Grade every persisted run that carries a roster.
+ *
+ * Reads prices as of today on purpose. This is the one place later data is the point
+ * rather than a leak: it is asking what happened, not what was knowable.
+ */
+export async function gradeRuns(store: Store, runId?: string): Promise<GradeReport[]> {
+  const today = todayISO();
+  const slice = await store.sliceAsOf(today, { metrics: [PRICE_METRIC] });
+  const runs = await store.allRuns();
+
+  return runs
+    .filter((run) => !runId || run.runId.startsWith(runId))
+    .flatMap((run) => {
+      const roster = (run.payload as { roster?: RosterEntry[] }).roster;
+      if (!roster?.length) return [];
+      return [gradeRun({ runId: run.runId, asOf: run.asOf, questionSetVersion: run.questionSetVersion, roster }, slice, today)];
+    });
+}
+
 // ── Command line ──────────────────────────────────────────────────────────────
 
 function parseArgs(argv: readonly string[]): Map<string, string> {
@@ -747,6 +781,17 @@ async function main(): Promise<void> {
         : `\ningested ${report.observations} observations for ${report.filers} filers` +
           (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
           `\n${report.skipped} companyfacts entries skipped (no submissions record)\n`);
+      return;
+    }
+
+    if (subcommand === "grade") {
+      const reports = await gradeRuns(store, flags.get("run"));
+      if (reports.length === 0) {
+        console.log("\nNo run carries a roster yet. Runs persisted before grading existed recorded only");
+        console.log("their picks, and a scorecard needs what was passed over too. The next screen will.\n");
+        return;
+      }
+      console.log(JSON.stringify(reports, null, 2));
       return;
     }
 

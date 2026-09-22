@@ -130,6 +130,8 @@ export interface Store {
   saveRun(run: RunRecord): Promise<void>;
   latestRun(asOf?: ISODate): Promise<RunRecord | undefined>;
   runCount(): Promise<number>;
+  /** Every persisted run, oldest first — the accumulating record grading reads. */
+  allRuns(): Promise<RunRecord[]>;
   recordFetch(source: string, kind: string, ok: boolean, detail?: string): Promise<void>;
   fetchStatus(): Promise<FetchStatus[]>;
   readonly cache: JudgmentCache;
@@ -384,6 +386,18 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
         contaminated: Boolean(row["contaminated"]),
         payload: JSON.parse(asString(row["payload"])) as unknown,
       };
+    },
+
+    async allRuns() {
+      const reader = await connection.runAndReadAll(
+        "SELECT run_id, as_of, question_set_version, contaminated, payload FROM runs ORDER BY created_at ASC");
+      return reader.getRowObjectsJS().map((row) => ({
+        runId: asString(row["run_id"]),
+        asOf: isoDate(asString(row["as_of"])),
+        questionSetVersion: asString(row["question_set_version"]),
+        contaminated: Boolean(row["contaminated"]),
+        payload: JSON.parse(asString(row["payload"])) as unknown,
+      }));
     },
 
     async runCount() {

@@ -192,6 +192,40 @@ would have overturned. One pass, one question set, nothing that judges blind.
   **every** company it judged. That is the `sufficiency` question doing exactly what it is for —
   the model telling you its evidence was incomplete, rather than quietly scoring anyway.
 
+## The scorecard
+
+```sh
+npm run screen -- grade
+```
+
+Forward-only, because it has to be. The system cannot be backtested — jev's training
+data may already contain what happened after any filing it reads — so grading starts the
+day the first run was persisted and accumulates from there. That is why runs are written
+in full and never rewritten, and why each one now carries a **roster** of every company
+judged, not just the ones picked.
+
+Three things it reports, and each exists to stop a specific way of fooling yourself:
+
+- **The spread, not the level.** A bucket of picks going up proves nothing; the market
+  goes up. The number that means something is `include` minus `exclude`, from the same
+  universe on the same day.
+- **The free baseline beside it.** The same universe ranked by cash conversion alone,
+  size-matched to what jev included. If jev's ordering does not beat a ranking that costs
+  nothing and needs no model, the judgment layer is decoration — and that is the most
+  valuable thing this can tell you.
+- **`pending`, not zero.** A horizon the price history does not reach yet reports the date
+  it needs and no number. Horizons are 1m, 3m, 6m, 1y, 2y.
+
+`priceOn` only ever reads backwards from a target date, so grading cannot smuggle in the
+look-ahead the store exists to prevent — there is a test for exactly that. Every report
+carries caveats it should not be read without: one cohort proves nothing, overlapping
+holding periods are autocorrelated, and returns are price-only so high-yield names are
+understated.
+
+Expect `pending` on every horizon for months. That is the honest answer, and having the
+measurement written before the data arrives is the point — it cannot then be shaped to
+fit whatever showed up.
+
 ## Four limitations, stated plainly
 
 **1. Prices are end-of-day, and a filer with no ticker has none.** Polygon's grouped endpoint

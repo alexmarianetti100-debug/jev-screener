@@ -99,7 +99,7 @@ export const FILING_EXCERPT_CHARS = 30_000;
  * Forgetting to bump after widening it would serve judgments formed on less
  * evidence — exactly the failure the price flag had to be added to the key to stop.
  */
-export const QUESTION_SET_VERSION = `2026-09-22.1+${FILING_EXCERPT_CHARS}`;
+export const QUESTION_SET_VERSION = `2026-09-22.2+${FILING_EXCERPT_CHARS}`;
 
 // ── Contamination ─────────────────────────────────────────────────────────────
 

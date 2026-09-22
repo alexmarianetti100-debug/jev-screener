@@ -659,6 +659,20 @@ export async function coverageStatus(store: Store, asOf: ISODate = todayISO()): 
   };
 }
 
+/**
+ * Expected band as a period a person can read.
+ *
+ * The expected value lands between rubric levels — 1.6 is "past two quarters, not
+ * yet a year" — so it is reported alongside the number rather than instead of it.
+ * This is presentation: it renames what jev returned, it decides nothing.
+ */
+export function horizonLabel(band: number): string {
+  const levels = ["within a quarter", "1-2 quarters", "2-4 quarters", "1-2 years", "3+ years"];
+  const low = levels[Math.max(0, Math.min(levels.length - 1, Math.floor(band)))]!;
+  const high = levels[Math.max(0, Math.min(levels.length - 1, Math.ceil(band)))]!;
+  return low === high ? low : `${low} → ${high}`;
+}
+
 // ── Command line ──────────────────────────────────────────────────────────────
 
 function parseArgs(argv: readonly string[]): Map<string, string> {
@@ -761,7 +775,9 @@ function printScreen(report: ScreenReport): void {
       `       verdict ${verdict.choice} ${(verdict.confidence * 100).toFixed(0)}%  ·  ` +
         `durability ${answers.durability.score.toFixed(2)}  ·  accounting ${answers.accountingQuality.choice}  ·  ` +
         `risk ${answers.dominantRisk.choice}  ·  candor ${answers.managementCandor.choice}  ·  ` +
-        `evidence ${answers.sufficiency.choice}`,
+        `evidence ${answers.sufficiency.choice}\n       ` +
+        `settles via ${answers.horizonDriver.choice}  ·  ${horizonLabel(answers.horizonBand.score)} ` +
+        `(band ${answers.horizonBand.score.toFixed(2)} of 4)`,
     );
   }
 

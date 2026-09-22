@@ -236,6 +236,8 @@ function stubJev() {
             dominantRisk: choice("demand", { demand: 0.5, margin: 0.2, balanceSheet: 0.1, regulatory: 0.1, none: 0.1 }),
             managementCandor: choice("direct", { direct: 0.6, guarded: 0.3, evasive: 0.1 }),
             sufficiency: choice("sufficient", { sufficient: 0.9, thin: 0.08, insufficient: 0.02 }),
+            horizonDriver: choice("nextPrint", { nextPrint: 0.5, contracted: 0.2, balanceSheet: 0.1, regulatory: 0.1, structural: 0.1 }),
+            horizonBand: score(1.6),
       };
 
       return Response.json({
@@ -321,6 +323,8 @@ test("judgment sees the valuation multiples", async () => {
             dominantRisk: { type: "choice", choice: "none", confidence: 0.5, probabilities: {} },
             managementCandor: { type: "choice", choice: "direct", confidence: 0.5, probabilities: {} },
             sufficiency: { type: "choice", choice: "sufficient", confidence: 0.9, probabilities: {} },
+            horizonDriver: { type: "choice", choice: "structural", confidence: 0.5, probabilities: {} },
+            horizonBand: { type: "score", score: 3, confidence: 0.5, legend: {}, probabilities: {} },
           },
           usage: { input_tokens: 10, output_tokens: 1 },
         });
@@ -557,4 +561,17 @@ test("an intermittent source is not abandoned — the run is about consecutive f
   } finally {
     await store.close();
   }
+});
+
+test("an expected horizon band reads as a period, and keeps its precision", async () => {
+  const { horizonLabel } = await import("./cli.ts");
+
+  assert.equal(horizonLabel(0), "within a quarter");
+  assert.equal(horizonLabel(4), "3+ years");
+  // The expected value of an ordered rubric usually lands between levels, and saying
+  // so is more honest than rounding to whichever one is nearer.
+  assert.equal(horizonLabel(1.6), "1-2 quarters → 2-4 quarters");
+  // Out of range cannot happen from a five-level rubric, but must not throw if it does.
+  assert.equal(horizonLabel(-1), "within a quarter");
+  assert.equal(horizonLabel(99), "3+ years");
 });

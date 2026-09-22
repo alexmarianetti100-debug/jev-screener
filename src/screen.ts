@@ -79,6 +79,34 @@ export const judgmentQuestionSet = {
     evasive: "Discusses results in ways that obscure the problems visible in the numbers.",
   }),
 
+  /**
+   * What would resolve this, and over what period.
+   *
+   * Two questions rather than one, because a horizon with no mechanism behind it is
+   * a number that looks more meaningful than it is. The driver names the thing that
+   * has to happen; the band says when. Asking for the band as a `score` returns the
+   * full distribution over periods, so "probably two to four quarters, with real
+   * mass on two years" survives instead of collapsing to a false point estimate.
+   *
+   * Neither is a forecast of return. They describe when the evidence would settle,
+   * which is the only horizon this system has any basis for.
+   */
+  horizonDriver: choice("What would settle this view — what has to happen before it is shown right or wrong?", {
+    nextPrint: "The next quarterly report. The open question is one the following filing answers directly.",
+    contracted: "Backlog, deferred revenue or performance obligations converting on a schedule the filing states.",
+    balanceSheet: "Debt maturing, refinancing, or a liquidity position resolving one way or the other.",
+    regulatory: "A decision by a regulator, court or legislature, on their timetable rather than the company's.",
+    structural: "Nothing dated. It plays out through the business compounding or failing to, over years.",
+  }),
+
+  horizonBand: score("Over what period would that resolution most likely arrive?", [
+    "Within a quarter.",
+    "One to two quarters.",
+    "Two to four quarters.",
+    "One to two years.",
+    "Three years or more.",
+  ]),
+
   sufficiency: choice("Was the evidence supplied enough to judge this company?", {
     sufficient: "Yes — the metrics and filing text cover what this judgment needs.",
     thin: "Judgeable, but with real gaps; treat the verdict as provisional.",

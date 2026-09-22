@@ -121,6 +121,11 @@ test("the question sets are the shapes the rules require", () => {
   assert.equal(judgmentQuestionSet.attractiveness.type, "score");
   assert.equal(judgmentQuestionSet.durability.type, "score");
   assert.equal(judgmentQuestionSet.sufficiency.type, "choice");
+
+  // The horizon is two questions: what settles it (discrete) and when (ordered).
+  assert.equal(judgmentQuestionSet.horizonDriver.type, "choice");
+  assert.equal(judgmentQuestionSet.horizonBand.type, "score");
+  assert.equal(judgmentQuestionSet.horizonBand.criteria.length, 5, "five periods, shortest first");
   assert.ok(judgmentQuestionSet.attractiveness.criteria.length >= 2);
 
   // No noul question may exist in either set, because noul must never drive flow.

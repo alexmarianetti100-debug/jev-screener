@@ -8,6 +8,7 @@
  * this code overruling the model it was built to defer to.
  */
 
+import { createHash } from "node:crypto";
 import { choice, score, type JsonValue, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk";
 import { CONTAMINATION_WINDOW_DAYS, QUESTION_SET_VERSION } from "./constants.ts";
 import type { DerivedMetric, MetricRow } from "./metrics.ts";
@@ -284,4 +285,29 @@ export function assertRunnable(
       `CONTAMINATED: asOf ${asOf} is ${daysStale} days old. jev may know what happened next. ` +
       "These results must not be used to evaluate the screener's performance.",
   };
+}
+
+// ── The freeze ────────────────────────────────────────────────────────────────
+
+/**
+ * A fingerprint of every question, criterion and rubric level, in order.
+ *
+ * `QUESTION_SET_VERSION` has to be bumped by hand, and a measurement that depends on
+ * someone remembering is a measurement waiting to drift. This is derived from the
+ * questions themselves, so a reworded criterion changes it whether or not anyone
+ * noticed — and a pinned test then fails and says what to do.
+ *
+ * The point is not to prevent change. It is to stop change happening *quietly*: a
+ * scorecard built across two different question sets is measuring a moving target,
+ * and cohorts either side of an edit are not comparable.
+ */
+export function questionSetFingerprint(): string {
+  const shape = Object.entries(judgmentQuestionSet).map(([name, question]) => {
+    const q = question as { type: string; prompt?: string; criteria: unknown };
+    const criteria = Array.isArray(q.criteria)
+      ? q.criteria
+      : Object.entries(q.criteria as Record<string, string>).sort(([a], [b]) => a.localeCompare(b));
+    return [name, q.type, q.prompt ?? "", JSON.stringify(criteria)].join("\u0000");
+  });
+  return createHash("sha256").update(shape.join("\u0001")).digest("hex").slice(0, 16);
 }

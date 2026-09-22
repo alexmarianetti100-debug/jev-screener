@@ -190,3 +190,22 @@ test("the only tunable numbers live in constants.ts, and are operational", async
     "QUESTION_SET_VERSION",
   ]);
 });
+
+// ── The freeze ────────────────────────────────────────────────────────────────
+
+test("the question set is frozen, and breaking the freeze must be deliberate", async () => {
+  const { questionSetFingerprint } = await import("./screen.ts");
+  const { QUESTION_SET_VERSION } = await import("./constants.ts");
+
+  // If this fails you changed a question. That is allowed — but a scorecard built
+  // across two question sets is measuring a moving target, and cohorts either side
+  // of the edit are not comparable. So do all three, in order:
+  //
+  //   1. bump QUESTION_SET_VERSION in constants.ts
+  //   2. add a row to the epoch table in README.md saying what changed and why
+  //   3. update the fingerprint below
+  //
+  // Doing only (3) is how a measurement quietly stops meaning anything.
+  assert.equal(questionSetFingerprint(), "577acd7794ca0418", "question set changed — see the comment above");
+  assert.equal(QUESTION_SET_VERSION, "2026-09-22.2+30000", "version must move with the questions");
+});

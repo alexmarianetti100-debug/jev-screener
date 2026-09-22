@@ -234,6 +234,54 @@ Expect `pending` on every horizon for months. That is the honest answer, and hav
 measurement written before the data arrives is the point — it cannot then be shaped to
 fit whatever showed up.
 
+## Keeping it running
+
+`grade` needs two things to accumulate: closes to measure against, and cohorts to
+measure. Neither happens on its own.
+
+```sh
+crontab -e
+```
+
+```
+30 17 * * 1-5  cd ~/Desktop/codingprojects/jevproject && ./scripts/refresh.sh prices >> data/cron.log 2>&1
+0  9  1 * *    cd ~/Desktop/codingprojects/jevproject && ./scripts/refresh.sh screen >> data/cron.log 2>&1
+```
+
+Weekday closes, and one screen a month. Monthly rather than weekly because a cohort is
+only worth having if enough filings have landed to make it different from the last one,
+and rather than quarterly because twelve cohorts a year is the difference between a
+result in two years and a result in six.
+
+Both are idempotent — a second run the same day does nothing — so a missed cron or a
+double fire is harmless. The monthly screen costs little: vintage caching means only
+companies that have filed since the last run are re-judged, and the rest come from cache
+at zero tokens. The screen run grades itself immediately afterwards, so a broken
+measurement surfaces next to the run that produced it rather than a quarter later.
+
+One thing cron cannot fix: closes missed are gone. The bulk archive reaches back two
+years on the free tier, so a long outage is recoverable, but not indefinitely.
+
+## The freeze
+
+A scorecard built across two different question sets measures a moving target. Cohorts
+either side of an edit are not comparable, and averaging them is worse than having
+neither. So the question set is frozen, and the freeze is enforced rather than promised:
+`questionSetFingerprint()` hashes every question, criterion and rubric level, and a test
+pins it. Reword anything and the build fails.
+
+Breaking it is allowed. Breaking it *quietly* is not. Three steps, in order: bump
+`QUESTION_SET_VERSION`, add a row below saying what changed and why, then update the
+pinned fingerprint.
+
+| Epoch | Fingerprint | Changed | Why |
+| --- | --- | --- | --- |
+| `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. Measurement starts here. |
+
+Everything before this epoch was development, not measurement. Those runs are still in
+the `runs` table and still readable, but they answered different questions and should
+not be pooled with what comes after.
+
 ## Does it read the evidence, or the name?
 
 `npm run screen -- probe` found jev identifies about **85%** of these companies from their

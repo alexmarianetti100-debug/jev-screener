@@ -389,7 +389,11 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
     judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
   } else {
-    log("  no closes stored — judging on fundamentals and filing text alone");
+    // `stored: 0` means every day requested was already on file, which is the normal
+    // steady state — not an absence of prices. The slice above already carries them,
+    // so multiples are present either way. Saying "no closes" here would read as the
+    // degraded case and invite exactly the wrong conclusion.
+    log("  closes already on file — no refetch needed");
   }
 
   // ── Judgment ──

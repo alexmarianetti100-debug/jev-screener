@@ -186,21 +186,28 @@ recorded on every observation, so the choice stays auditable.
 
 ## Observed behaviour on real data
 
-Measured on a live ingest, 2026-09-21:
+Measured on a live ingest, 2026-09-22:
 
 | | |
 | --- | --- |
 | Filers with XBRL data | 20,390 |
-| Observations ingested | 5,864,257 |
+| Observations ingested | 6,207,389 |
 | Database size | 1.9 GB (+ 2.8 GB of cached archives) |
 | **Eligible universe** | **3,962** |
 | Biggest eligibility failures | too few revenue quarters (12,674), 10-K older than 18 months (8,949), no operating cash flow (6,170), no 10-K on file (5,477), foreign issuer or fund (4,156) |
 | Slice + eligibility pass | ~10 s |
-| Judgment | 9,824 input tokens/company, ~$0.00041 each |
+| Judgment | ~12,650 input tokens/company |
 | Eligible filers SEC lists no ticker for | 310 |
+| Included by jev | **985 of 3,962 — 24.9%** |
 
-So a full sweep is roughly **$1.60**. The cache means you pay that once per filing cycle, not
-per run.
+Dated obligations, from the same ingest: 5,466 filers publish next-year debt maturities,
+5,500 the year after, 6,665 a lease schedule, 3,661 a contract liability and 1,739 a
+remaining performance obligation. Absent is the common case, and is sent to jev as null
+rather than omitted — "no maturity schedule published" is a fact about the filing.
+
+So a full sweep is roughly **$2**. The cache means you pay that once per filing cycle, not
+per run: a month in which only a few hundred companies have filed costs a fraction of it,
+and a re-run with nothing new costs nothing at all.
 
 ### Why there is no cheap pre-filter
 
@@ -322,6 +329,13 @@ pinned fingerprint.
 | --- | --- | --- | --- |
 | `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. |
 | `2026-09-22.3+30000` | `577acd7794ca0418` | Dated obligations added to the state | `horizonBand` was resting on inference alone. Debt and lease maturity schedules and remaining performance obligations are contractual and dated, so the horizon can rest on something the filer committed to. The questions are untouched — the fingerprint is unchanged — but jev sees more, which is the same kind of break. Done deliberately before any forward data existed. **Measurement starts here.** |
+
+**No run exists at the current epoch yet.** Every persisted run predates it — the newest
+are at `2026-09-22.2+30000`, judged before the dated obligations went in. The first run at
+the frozen epoch will be the next scheduled monthly screen, and that is the one `grade`
+should be read against. Runs before it remain in the table and remain readable; they
+answered a question the screener no longer asks, and pooling them with what follows would
+be the exact drift the freeze exists to prevent.
 
 Everything before this epoch was development, not measurement. Those runs are still in
 the `runs` table and still readable, but they answered different questions and should
@@ -455,10 +469,17 @@ src/prices.ts        Polygon adapter, one request per trading day
 src/universe.ts      eligibility predicates (presence/recency/completeness only)
 src/metrics.ts       arithmetic only, zero judgment
 src/peers.ts         universe-wide and sector metric distributions
-src/screen.ts        both jev question sets, the typed calls, result assembly
-src/cache.ts         judgment cache keyed on input vintage
+src/screen.ts        the jev question set, the typed call, result assembly
+src/cache.ts         judgment cache keyed on input vintage and price presence
 src/pool.ts          bounded-concurrency runner and rate limiter
-src/cli.ts           the pipeline, plus ingest / screen / explain / coverage
+src/cli.ts           the pipeline, plus ingest / screen / explain / coverage / grade
+src/grade.ts         the forward-only scorecard
+src/probe.ts         can jev identify these companies?
+src/twins.ts         does it judge the evidence or the name?
+src/demo.ts          fixtures and a stubbed model, for running without keys
+src/serve.ts         the read-only local view
+src/ui.ts            that view's page, inlined
+src/ui-server.ts     its entry point, separate to break an import cycle
 src/mcp.ts           MCP stdio server
 ```
 

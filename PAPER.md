@@ -52,7 +52,7 @@ and no read is possible without an as-of date. That machinery is necessary and, 
 a language model, insufficient, for reasons that turn out to be unfixable.
 
 **Every serious bug was found by running it, not by testing it.** The test suite grew to
-184 tests and never caught the defects that mattered. They surfaced against 5.9 million
+193 tests and never caught the defects that mattered. They surfaced against 6.2 million
 real observations, and that pattern is the most transferable thing here.
 
 ---
@@ -62,18 +62,20 @@ real observations, and that pattern is the most transferable thing here.
 ```
 SEC EDGAR bulk archives ──┐
                           ├──> DuckDB (bitemporal) ──> metrics ──> peer context ──┐
-Polygon grouped daily  ───┘         5.89M rows        (arithmetic)                │
+Polygon grouped daily  ───┘         6.21M rows        (arithmetic)                │
                                                                                    ▼
-                                                                          jev (7 questions)
+                                                                          jev (9 questions)
                                                                                    │
                                         picks ◄── assemble ◄── verdict + attractiveness
                                           │
                                           ├──> persisted run (immutable, with full roster)
-                                          └──> MCP server (3 read-only tools)
+                                          ├──> MCP server (3 read-only tools)
+                                          ├──> local web view (read-only)
+                                          └──> grade (forward-only scorecard)
 ```
 
 **Ingest.** Two bulk ZIPs give the entire universe in two requests — 20,390 filers,
-5.89 million observations. Per-company API calls are reserved for the few hundred
+6.21 million observations. Per-company API calls are reserved for the few hundred
 filings actually read.
 
 **Eligibility.** Narrows to 3,962 evaluable companies using predicates that reference
@@ -85,13 +87,21 @@ would be a statement about the business, and would quietly make that file the sc
 leverage, dilution, accrual ratio, working-capital-versus-sales gaps, and valuation
 multiples where a price exists.
 
+**Dated obligations.** Everything above describes a period that has already closed. Debt
+and lease maturity schedules and remaining performance obligations are contractual and
+dated — they say when money must be found and how much revenue is already booked — and
+they are what lets a horizon rest on something the filer committed to rather than on
+inference. Coverage on the live universe: 5,466 filers publish next-year debt maturities,
+6,665 a lease schedule, 1,739 an RPO. Absent is the common case and is sent as null
+rather than omitted, because "no maturity schedule published" is itself a fact.
+
 **Peer context.** Distributions across the whole eligible universe and within the
 company's sector, computed once and passed identically to every call — because
 `attractiveness` scores are only comparable if every call saw the same yardstick.
 
-**Judgment.** One call per company with seven questions: verdict, attractiveness,
-durability, accounting quality, dominant risk, management candour, and evidence
-sufficiency, plus two that ask when the view would settle and by what mechanism.
+**Judgment.** One call per company with nine questions: verdict, attractiveness,
+durability, accounting quality, dominant risk, management candour and evidence
+sufficiency, plus two asking when the view would settle and by what mechanism.
 
 **Persistence.** Every run is written in full and never rewritten, carrying a roster of
 every company judged — not just the picks. A scorecard needs what was passed over.
@@ -178,7 +188,7 @@ of the question, but it changes what the model sees, and the cache cannot see it
 
 ## What running it taught
 
-The test suite reached 184 tests. It never caught a single one of the defects below.
+The test suite reached 193 tests. It never caught a single one of the defects below.
 They all appeared against real data.
 
 | Bug | How it presented | Why tests missed it |
@@ -190,6 +200,8 @@ They all appeared against real data.
 | Eight-fold row duplication | Every run re-appended the same closes | Needed several runs |
 | Survivorship in grading | Delisted picks silently dropped | Needed a delisting, i.e. months |
 | A chat tool spending $2 | MCP `screen_run` ran the full pipeline | Needed the tool called for real |
+| A demo that screened nothing | Hard-coded fixture dates fell in the future | Needed the calendar to move |
+| A deadlocked module graph | UI started, printed nothing, exited 13 | Needed the entry point, not the unit |
 
 That last one is worth expanding. The MCP tool's own description said it "does not
 trigger a sweep." The code called the full pipeline. The first live probe timed out at
@@ -371,6 +383,10 @@ for — Exxon Mobil Corp among them — are judged without multiples.
 **One cohort is not significance.** Overlapping holding periods across runs are
 autocorrelated, and repeated cohorts are fewer independent observations than they appear.
 
+**Nothing has been measured at the frozen question set yet.** Every persisted run
+predates the epoch the scorecard should be read against — the dated obligations went in
+after them. The first measured cohort is the next scheduled screen.
+
 **The model is a single point of failure.** One vendor, one build, no fallback, and its
 judgments cannot be audited beyond the distributions it returns.
 
@@ -380,18 +396,38 @@ judgments cannot be audited beyond the distributions it returns.
 
 ```sh
 npm install
+npm run demo            # no keys, no network — fixtures and a stubbed model
+```
+
+That last one is the honest entry point. Reproducing the real thing needs three
+credentials, one of them a model with a single exposed build, which is a barrier for
+anyone deciding whether to care. `npm run demo` runs the actual pipeline — eligibility,
+metrics, peer distributions, the point-in-time slice, caching, assembly and
+persistence — against three fixture companies, and replaces only the two things that
+cost money.
+
+For the real universe:
+
+```sh
 cp .env.example .env    # OPENROUTER_API_KEY, POLYGON_API_KEY, EDGAR_USER_AGENT
 npm run check           # is the key live and is jev reachable
 npm run ingest          # ~15 min, 2.8 GB of bulk archives
 npm run screen          # the full pipeline
 npm run screen -- grade # the scorecard
+npm run ui              # a read-only local view at 127.0.0.1:7373
+npm run screen -- probe # can jev identify these companies?
+npm run screen -- twins # does it judge the evidence or the name?
 ```
+
+Both experiments in this paper are commands, not one-off scripts. Anyone can re-run them
+and get their own numbers.
 
 A full sweep of 3,962 companies costs roughly $2 and fifteen minutes. With vintage
 caching, a monthly re-run costs a fraction of that, because only companies that have
 filed since the last run are re-judged.
 
-Total spend building and running everything described here: **under $10**.
+Total spend building and running everything described here — every ingest, every full
+sweep, both experiments and every false start: **$7.72**.
 
 ---
 

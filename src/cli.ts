@@ -334,60 +334,62 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
 
   log(`screening ${candidates.length} of ${universe.eligible.length} eligible companies…`);
 
+  // ── Prices ──
+  //
+  // Fetched before the cache is consulted, because whether a multiple exists is part
+  // of the key: a verdict formed with no valuation and one formed with it are answers
+  // to different evidence, and keying only on filing vintage would serve the first in
+  // place of the second forever.
+  //
+  // This is affordable only because the source is bulk — one request per trading day
+  // for the whole market, and each completed day is cached on disk. A second run the
+  // same day therefore still touches no network at all.
+  const survivorRows = candidates;
+  const survivors = survivorRows.map((row) => row.entity);
+
+  log(`fetching closes for ${survivors.length} companies…`);
+  // No key configured is a known state, not twenty identical failures. Tests inject a
+  // client, so an injected one is always used regardless of the environment.
+  const priceReport = options.prices || hasPolygonKey()
+    ? await ingestPrices(
+        store, options.prices ?? createPriceClient(),
+        recentDays(asOf, PRICE_BACKFILL_DAYS), entityIndex(profiles), log)
+    : (log("  POLYGON_API_KEY not set — skipping prices, multiples will be absent"),
+       { stored: 0, attempted: 0, failed: 0, abandoned: false });
+  if (priceReport.abandoned) {
+    failures.push(
+      `price source gave up after ${priceReport.failed} failures; ` +
+        `${priceReport.attempted} days attempted, valuation multiples absent`,
+    );
+  }
+
+  // Re-slice only if prices actually landed. A slice is held entirely in memory, so
+  // building a second one beside the first doubles the peak — on the live universe
+  // that is two multi-million-row slices at once, which exhausts the default heap.
+  // When nothing was stored the new slice would be identical to the one we hold.
+  let pricedRows = survivorRows;
+  let judgmentPeers: PeerTables = peerTables;
+  if (priceReport.stored > 0) {
+    const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
+    pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
+    judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
+  } else {
+    log("  no closes stored — judging on fundamentals and filing text alone");
+  }
+
   // ── Judgment ──
   //
-  // The cache is consulted BEFORE any fetching. Judgment cache keys are built from
-  // filing vintage alone (see `vintageOf`), so they can be computed without prices —
-  // which means a fully cached run touches neither Stooq nor EDGAR, and needs no API
-  // key. That is what makes `screen_run` cheap enough to call from a conversation.
-  const survivorRows = candidates;
-  const judgmentKeys = survivorRows.map((row) => cacheKeyFor(row, QUESTION_SET_VERSION, "judgment"));
+  // Keys come from the priced rows, so they describe the evidence actually judged.
+  const judgmentKeys = pricedRows.map((row) => cacheKeyFor(row, QUESTION_SET_VERSION, "judgment"));
 
   const cached: (JudgmentResult | undefined)[] = [];
   for (const key of judgmentKeys) {
     cached.push((await store.cache.get<JudgmentResult>(key))?.value);
   }
-  const stale = survivorRows.map((_, i) => i).filter((i) => cached[i] === undefined);
-
-  let pricedRows = survivorRows;
-  let judgmentPeers: PeerTables = peerTables;
+  const stale = pricedRows.map((_, i) => i).filter((i) => cached[i] === undefined);
   const filings = new Map<Entity, FilingExcerpt>();
 
   if (stale.length > 0) {
-    // Prices are fetched for EVERY survivor, not just the stale ones. The multiples
-    // distribution has to be the same yardstick for all of them; computing it over
-    // whichever companies happened to miss cache would make a score depend on its
-    // batch, which is the one thing the peer context exists to prevent.
-    const survivors = survivorRows.map((row) => row.entity);
-    log(`fetching prices for ${survivors.length} survivors…`);
-    // No key configured is a known state, not twenty identical failures. Tests inject
-    // a client, so an injected one is always used regardless of the environment.
-    const priceReport = options.prices || hasPolygonKey()
-      ? await ingestPrices(
-          store, options.prices ?? createPriceClient(),
-          recentDays(asOf, PRICE_BACKFILL_DAYS), entityIndex(profiles), log)
-      : (log("  POLYGON_API_KEY not set — skipping prices, multiples will be absent"),
-         { stored: 0, attempted: 0, failed: 0, abandoned: false });
-    if (priceReport.abandoned) {
-      failures.push(
-        `price source gave up after ${priceReport.failed} failures; ` +
-          `${survivors.length - priceReport.attempted} tickers unattempted, valuation multiples absent`,
-      );
-    }
-
-    // Re-slice only if prices actually landed. A slice is held entirely in memory,
-    // so building a second one beside the first doubles the peak — on the live
-    // universe that is two multi-million-row slices at once, which exhausts the
-    // default heap. When the price source is unreachable, `stored` is 0 and the new
-    // slice would be identical to the one we already have.
-    if (priceReport.stored > 0) {
-      const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
-      pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
-      judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
-    } else {
-      log("  no prices stored — judging on fundamentals and filing text alone");
-    }
-
     // Filing text, on the other hand, is only worth fetching for what we will ask
     // about: ~15,000 tokens of MD&A that a cache hit would never read.
     log(`fetching filing text for ${stale.length} companies…`);

@@ -98,7 +98,7 @@ test("filers round-trip, including their filing list", async () => {
 
 test("the judgment cache survives a round trip through SQL", async () => {
   await withStore(async (store) => {
-    const key = { entity: ACME, questionSetVersion: "v1", maxKnownAt: isoDate("2026-08-01"), stage: "judgment" as const };
+    const key = { entity: ACME, questionSetVersion: "v1", maxKnownAt: isoDate("2026-08-01"), stage: "judgment" as const, hasPrice: false };
 
     assert.equal(await store.cache.get(key), undefined);
     await store.cache.put({
@@ -115,7 +115,7 @@ test("the judgment cache survives a round trip through SQL", async () => {
 
 test("a different vintage is a different cache entry", async () => {
   await withStore(async (store) => {
-    const base = { entity: ACME, questionSetVersion: "v1", stage: "judgment" as const };
+    const base = { entity: ACME, questionSetVersion: "v1", stage: "judgment" as const, hasPrice: false };
     await store.cache.put({
       key: { ...base, maxKnownAt: isoDate("2026-05-01") },
       value: "old", model: "jev", inputTokens: 1, outputTokens: 1, createdAt: new Date().toISOString(),

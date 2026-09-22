@@ -24,6 +24,16 @@ export interface CacheKey {
   /** The newest `knownAt` across every input that fed the judgment. */
   readonly maxKnownAt: ISODate;
   readonly stage: Stage;
+  /**
+   * Whether the judgment saw a valuation multiple at all.
+   *
+   * The price *level* is excluded from the vintage on purpose — it changes every
+   * afternoon, and counting it would expire every judgment nightly. But whether a
+   * price existed is a different thing: a verdict formed with no multiples and one
+   * formed with them are answers to materially different evidence, and without this
+   * the first would be served in place of the second forever.
+   */
+  readonly hasPrice: boolean;
 }
 
 export interface CacheEntry<T = unknown> {
@@ -77,12 +87,15 @@ export function rowVintage(row: MetricRow): ISODate {
 }
 
 export function cacheKeyFor(row: MetricRow, questionSetVersion: string, stage: Stage): CacheKey {
-  return { entity: row.entity, questionSetVersion, maxKnownAt: rowVintage(row), stage };
+  return {
+    entity: row.entity, questionSetVersion, maxKnownAt: rowVintage(row), stage,
+    hasPrice: row.hasPrice,
+  };
 }
 
 const SEP = "\u0000";
 export const serializeKey = (key: CacheKey): string =>
-  [key.stage, key.questionSetVersion, key.entity, key.maxKnownAt].join(SEP);
+  [key.stage, key.questionSetVersion, key.entity, key.maxKnownAt, key.hasPrice ? "p" : "-"].join(SEP);
 
 /** In-memory cache. Used by the tests, and as a fallback when no store is open. */
 export function memoryCache(): JudgmentCache {

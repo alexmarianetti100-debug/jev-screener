@@ -55,12 +55,13 @@ CREATE TABLE IF NOT EXISTS judgments (
   question_set_version  VARCHAR NOT NULL,
   max_known_at          VARCHAR NOT NULL,
   stage                 VARCHAR NOT NULL,
+  has_price             BOOLEAN NOT NULL,
   answers               JSON    NOT NULL,
   model                 VARCHAR NOT NULL,
   input_tokens          BIGINT  NOT NULL,
   output_tokens         BIGINT  NOT NULL,
   created_at            TIMESTAMP DEFAULT current_timestamp,
-  PRIMARY KEY (entity, question_set_version, max_known_at, stage)
+  PRIMARY KEY (entity, question_set_version, max_known_at, stage, has_price)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -156,6 +157,17 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
     throw /Could not set lock|Conflicting lock/i.test(message) ? lockError(path, error as Error) : error;
   }
   const connection = await instance.connect();
+  // The judgment table is a cache, so a shape change is migrated by rebuilding it
+  // rather than by an ALTER. Losing it costs one re-judgment; serving entries keyed
+  // on a column that no longer means the same thing would cost correctness.
+  const judgmentColumns = await connection.runAndReadAll(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'judgments'",
+  );
+  const existing = judgmentColumns.getRows().map((row) => String(row[0]));
+  if (existing.length > 0 && !existing.includes("has_price")) {
+    await connection.run("DROP TABLE judgments");
+  }
+
   for (const statement of SCHEMA.split(";").map((s) => s.trim()).filter(Boolean)) {
     await connection.run(statement);
   }
@@ -168,8 +180,9 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
     async get<T>(key: CacheKey): Promise<CacheEntry<T> | undefined> {
       const reader = await connection.runAndReadAll(
         `SELECT answers, model, input_tokens, output_tokens, created_at FROM judgments
-         WHERE entity = $1 AND question_set_version = $2 AND max_known_at = $3 AND stage = $4`,
-        [key.entity, key.questionSetVersion, key.maxKnownAt, key.stage],
+         WHERE entity = $1 AND question_set_version = $2 AND max_known_at = $3 AND stage = $4
+           AND has_price = $5`,
+        [key.entity, key.questionSetVersion, key.maxKnownAt, key.stage, key.hasPrice],
       );
       const row = reader.getRowObjectsJS()[0];
       if (!row) {
@@ -191,10 +204,11 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
       // A judgment for a given key is immutable — same inputs, same question set.
       await connection.run(
         `INSERT OR REPLACE INTO judgments
-           (entity, question_set_version, max_known_at, stage, answers, model, input_tokens, output_tokens)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           (entity, question_set_version, max_known_at, stage, has_price, answers, model, input_tokens, output_tokens)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           entry.key.entity, entry.key.questionSetVersion, entry.key.maxKnownAt, entry.key.stage,
+          entry.key.hasPrice,
           JSON.stringify(entry.value), entry.model, entry.inputTokens, entry.outputTokens,
         ],
       );

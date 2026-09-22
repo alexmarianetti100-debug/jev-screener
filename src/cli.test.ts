@@ -346,11 +346,15 @@ test("a second run with no new filings is served from cache", async () => {
 
     const second = stubJev();
     const secondPrices = stubPrices();
-    // No edgar, no prices, no client: a fully cached run must need none of them.
+    // No edgar and no jev client: a fully cached run must need neither.
     const report = await runScreen({ store, prices: secondPrices });
 
     assert.equal(second.calls.length, 0, "no jev call was made on the second run");
-    assert.deepEqual(secondPrices.calls, [], "no price was fetched on the second run");
+    // Closes ARE consulted again, because whether a multiple exists is part of the
+    // cache key and cannot be known without asking. That is cheap by construction:
+    // the real client serves a completed trading day from disk, so a same-day rerun
+    // makes no network request. What must stay zero is jev calls and filing fetches.
+    assert.equal(secondPrices.calls.length, PRICE_BACKFILL_DAYS, "closes re-read, from cache in practice");
     assert.equal(report.usage.inputTokens, 0, "a cached run costs no tokens");
     assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"], "same answer from cache");
     assert.ok(report.cache.hits >= 3, "every judgment came from cache");

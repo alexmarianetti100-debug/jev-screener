@@ -330,12 +330,11 @@ pinned fingerprint.
 | `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. |
 | `2026-09-22.3+30000` | `577acd7794ca0418` | Dated obligations added to the state | `horizonBand` was resting on inference alone. Debt and lease maturity schedules and remaining performance obligations are contractual and dated, so the horizon can rest on something the filer committed to. The questions are untouched — the fingerprint is unchanged — but jev sees more, which is the same kind of break. Done deliberately before any forward data existed. **Measurement starts here.** |
 
-**No run exists at the current epoch yet.** Every persisted run predates it — the newest
-are at `2026-09-22.2+30000`, judged before the dated obligations went in. The first run at
-the frozen epoch will be the next scheduled monthly screen, and that is the one `grade`
-should be read against. Runs before it remain in the table and remain readable; they
-answered a question the screener no longer asks, and pooling them with what follows would
-be the exact drift the freeze exists to prevent.
+**The first measured cohort is run `a0c105d0`**, judged 2026-09-22 at this epoch: 3,962
+companies, 940 included, a full roster persisted. That is the run `grade` should be read
+against, and the clock starts from it. Earlier runs remain in the table and remain
+readable, but they answered questions the screener no longer asks, and pooling them with
+what follows would be the exact drift the freeze exists to prevent.
 
 Everything before this epoch was development, not measurement. Those runs are still in
 the `runs` table and still readable, but they answered different questions and should

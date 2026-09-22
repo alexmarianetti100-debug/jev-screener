@@ -316,6 +316,35 @@ to engineer around.
 
 ---
 
+## What the dated obligations changed
+
+Adding contractual, dated facts to the state was meant to give `horizonBand` something
+firmer than inference. Comparing the driver distribution before and after shows it
+worked, and by more than expected.
+
+Before, with nothing dated in the state, `nextPrint` swallowed almost everything — 92% of
+retail picks, 67% of healthcare. The other options existed but had nothing to point at.
+
+After, across the whole universe:
+
+| Driver | Share of picks |
+| --- | --- |
+| `nextPrint` | 41% |
+| `balanceSheet` | 26% |
+| `contracted` | 23% |
+| `regulatory` | 10% |
+| `structural` | <1% |
+
+`balanceSheet` and `contracted` together account for nearly half. Those are precisely the
+two answers that require a maturity schedule or a performance obligation to be visible —
+before, choosing them meant guessing. The median band moved to 2.20 (two to four
+quarters) with a range of 0.59 to 3.89, so the horizon now varies per company rather than
+clustering on the next earnings date.
+
+It also shows up in the top of the list. NVDA, MSFT, V, AAPL, MSCI and APPF all settle
+via `contracted` — all companies with large remaining performance obligations — where
+before they would have defaulted to the next print.
+
 ## What the screen actually produces
 
 From 3,962 eligible companies, jev includes about 25%, ranked with real separation
@@ -383,9 +412,9 @@ for — Exxon Mobil Corp among them — are judged without multiples.
 **One cohort is not significance.** Overlapping holding periods across runs are
 autocorrelated, and repeated cohorts are fewer independent observations than they appear.
 
-**Nothing has been measured at the frozen question set yet.** Every persisted run
-predates the epoch the scorecard should be read against — the dated obligations went in
-after them. The first measured cohort is the next scheduled screen.
+**Nothing has been *held* yet.** The first cohort at the frozen question set is run
+`a0c105d0` — 3,962 judged, 940 included, 2026-09-22 — and every horizon in the scorecard
+reports `pending` against it. The earliest, one month, resolves in late October.
 
 **The model is a single point of failure.** One vendor, one build, no fallback, and its
 judgments cannot be audited beyond the distributions it returns.

@@ -141,12 +141,10 @@ async function stubEdgar(): Promise<EdgarClient> {
 }
 
 const stubPrices = (): PriceClient => ({
-  async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
-    return [{
-      value: 50, metric: "close", entity,
-      validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
-      source: "stooq", reliability: "market",
-    }];
+  async dailyCloses(): Promise<ReadonlyMap<Ticker, number>> {
+    return new Map<Ticker, number>([
+      [ticker("GOOD"), 50], [ticker("MEH"), 40], [ticker("DROP"), 30],
+    ]);
   },
 });
 

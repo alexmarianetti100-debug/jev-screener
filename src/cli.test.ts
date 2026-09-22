@@ -11,8 +11,9 @@ import test from "node:test";
 import { createClient } from "./client.ts";
 import { coverageStatus, explainPick, ingestPrices, runIngest, runScreen } from "./cli.ts";
 import type { EdgarClient } from "./edgar.ts";
-import { cik, type Entity, isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
-import type { PriceClient } from "./prices.ts";
+import { type ISODate, cik, type Entity, isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
+import { PRICE_BACKFILL_DAYS } from "./constants.ts";
+import { recentDays, type PriceClient } from "./prices.ts";
 import { ContaminatedRunError } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
 
@@ -192,17 +193,15 @@ async function stubEdgar(): Promise<EdgarClient> {
   };
 }
 
-const stubPrices = (): PriceClient & { calls: Ticker[] } => {
-  const calls: Ticker[] = [];
+const stubPrices = (): PriceClient & { calls: ISODate[] } => {
+  const calls: ISODate[] = [];
   return {
     calls,
-    async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
-      calls.push(symbol);
-      return [{
-        value: 50, metric: "close", entity,
-        validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
-        source: "stooq", reliability: "market",
-      }];
+    async dailyCloses(day: ISODate): Promise<ReadonlyMap<Ticker, number>> {
+      calls.push(day);
+      return new Map<Ticker, number>([
+        [ticker("GOOD"), 50], [ticker("MEH"), 40], [ticker("DROP"), 30],
+      ]);
     },
   };
 };
@@ -291,7 +290,9 @@ test("the full pipeline runs, and jev's verdict alone decides the picks", async 
     assert.equal(report.picks[0]?.attractiveness.score, 4.5);
     assert.equal(report.stamp.contaminated, false);
 
-    assert.deepEqual([...prices.calls].sort(), ["DROP", "GOOD", "MEH"]);
+    // Prices are fetched by day now, not by company: one request covers the market,
+    // so the count is the calendar window and not the size of the universe.
+    assert.equal(prices.calls.length, PRICE_BACKFILL_DAYS, "one request per trading day");
     assert.equal(jev.calls.filter((c) => c.stage === "judgment").length, 3);
     assert.equal(jev.calls.some((c) => c.ticker === "DROP"), true, "DROP is judged, then excluded by jev");
   } finally {
@@ -484,7 +485,7 @@ test("a dead price source is abandoned, and the screen still produces picks", as
   try {
     let attempts = 0;
     const deadPrices: PriceClient = {
-      async closes(): Promise<Observation[]> {
+      async dailyCloses(): Promise<ReadonlyMap<Ticker, number>> {
         attempts++;
         throw new Error("fetch failed");
       },
@@ -506,17 +507,17 @@ test("the breaker stops asking a source that keeps failing", async () => {
   const store = await openStore(":memory:");
   try {
     const { PRICE_SOURCE_FAILURE_LIMIT } = await import("./constants.ts");
-    const tickers = Array.from({ length: PRICE_SOURCE_FAILURE_LIMIT + 200 }, (_, i) => ticker(`T${i}`));
+    const days = recentDays(isoDate("2026-09-21"), PRICE_SOURCE_FAILURE_LIMIT + 200);
 
     let attempts = 0;
     const dead: PriceClient = {
-      async closes(): Promise<Observation[]> {
+      async dailyCloses(): Promise<ReadonlyMap<Ticker, number>> {
         attempts++;
         throw new Error("fetch failed");
       },
     };
 
-    const report = await ingestPrices(store, dead, tickers.map((t) => ({ entity: cik(String(t.length)), ticker: t })), () => {});
+    const report = await ingestPrices(store, dead, days, new Map(), () => {});
 
     assert.equal(report.abandoned, true);
     assert.equal(report.stored, 0);
@@ -531,25 +532,22 @@ test("an intermittent source is not abandoned — the run is about consecutive f
   const store = await openStore(":memory:");
   try {
     const { PRICE_SOURCE_FAILURE_LIMIT } = await import("./constants.ts");
-    const tickers = Array.from({ length: PRICE_SOURCE_FAILURE_LIMIT * 3 }, (_, i) => ticker(`T${i}`));
+    const days = recentDays(isoDate("2026-09-21"), PRICE_SOURCE_FAILURE_LIMIT * 3);
+    const entityFor = new Map<Ticker, Entity>([[ticker("AAA"), cik(1)]]);
 
     let n = 0;
     const flaky: PriceClient = {
-      async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
+      async dailyCloses(): Promise<ReadonlyMap<Ticker, number>> {
         // Fails most of the time, but never `LIMIT` times in a row.
         if (++n % PRICE_SOURCE_FAILURE_LIMIT !== 0) throw new Error("transient");
-        return [{
-          value: 10, metric: "close", entity,
-          validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
-          source: "stooq", reliability: "market",
-        }];
+        return new Map<Ticker, number>([[ticker("AAA"), 12.5]]);
       },
     };
 
-    const report = await ingestPrices(store, flaky, tickers.map((t) => ({ entity: cik(String(t.length)), ticker: t })), () => {});
+    const report = await ingestPrices(store, flaky, days, entityFor, () => {});
 
     assert.equal(report.abandoned, false, "a flaky source is still worth finishing");
-    assert.equal(report.attempted, tickers.length);
+    assert.equal(report.attempted, days.length);
     assert.ok(report.stored > 0);
     assert.ok(report.failed > 0);
   } finally {

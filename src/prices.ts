@@ -1,114 +1,184 @@
 /**
- * Stooq daily prices.
+ * Daily closes from Polygon's grouped aggregates.
  *
- * Stooq has no bulk endpoint, so prices are fetched one ticker at a time. That makes
- * them too expensive for the whole universe on every run, and they are therefore
- * fetched lazily — only for the companies that survive triage.
+ * The shape matters more than the vendor. Polygon answers **one request per trading
+ * day with every US ticker's close in it**, so the whole universe costs one call
+ * rather than one call per company. The previous source had no bulk endpoint, which
+ * meant 3,652 sequential requests per refresh — half an hour of wall clock, and one
+ * unreachable host was enough to stall a run for eight hours.
  *
- * The consequence is deliberate and worth stating plainly: **stage 1 judges operating
- * fundamentals with no price and no valuation multiple at all.** A company is
- * advanced because of what the business looks like, never because it looks cheap.
- * Multiples exist only at stage 2. `ingest --prices-all` exists for anyone who wants
- * to refresh the full eligible universe on a schedule instead.
+ * Two consequences worth knowing:
+ *
+ *  1. **A completed trading day is immutable**, so its response is cached forever and
+ *     re-reading it is free. Per-ticker series had no such property: they change every
+ *     afternoon, so a cache of them is stale the moment it is written.
+ *  2. **Free-tier throughput is five requests a minute**, which sounds restrictive and
+ *     is not: a day of prices is one request, so a routine refresh needs one, and even
+ *     a two-year backfill is about 500.
+ *
+ * `knownAt` is the close date itself — a closing price is knowable the day it prints,
+ * which is what makes prices safe to mix with filings in a point-in-time slice.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CACHE_DIR, HTTP_TIMEOUT_MS, STOOQ_REQUESTS_PER_SECOND } from "./constants.ts";
-import { isoDate, observation, PRICE_METRIC, type ISODate, type Observation, type Entity, type Ticker } from "./observation.ts";
+import { CACHE_DIR, HTTP_TIMEOUT_MS, POLYGON_REQUESTS_PER_MINUTE } from "./constants.ts";
+import {
+  isoDate, observation, PRICE_METRIC,
+  type Entity, type ISODate, type Observation, type Ticker,
+} from "./observation.ts";
 import { rateLimiter } from "./pool.ts";
 
-export const STOOQ_BASE = "https://stooq.com/q/d/l/";
+export const POLYGON_BASE = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks";
 
-export const stooqUrl = (ticker: Ticker): string =>
-  `${STOOQ_BASE}?s=${encodeURIComponent(ticker.toLowerCase())}.us&i=d`;
+/** Adjusted closes, so a split does not read as a 50% drawdown. */
+export const polygonUrl = (day: ISODate, apiKey: string): string =>
+  `${POLYGON_BASE}/${day}?adjusted=true&apiKey=${encodeURIComponent(apiKey)}`;
+
+/** Whether a key is configured at all, so a run can skip prices instead of failing 20 times. */
+export const hasPolygonKey = (): boolean => Boolean(process.env["POLYGON_API_KEY"]?.trim());
+
+export function polygonApiKey(): string {
+  const key = process.env["POLYGON_API_KEY"]?.trim();
+  if (!key) {
+    throw new Error(
+      "POLYGON_API_KEY is not set. Get a free key at https://polygon.io/dashboard/api-keys " +
+        "and put it in .env — see .env.example.",
+    );
+  }
+  return key;
+}
 
 export interface PriceOptions {
   readonly fetch?: (url: string, init?: RequestInit) => Promise<Response>;
   readonly cacheDir?: string;
+  readonly apiKey?: string;
+  /** Rate gate override, for tests that must not sleep. */
   readonly gate?: () => Promise<void>;
 }
 
 export interface PriceClient {
-  /** Daily closes for one ticker, oldest first. Empty when Stooq has no series. */
-  closes(ticker: Ticker, entity: Entity): Promise<Observation[]>;
+  /**
+   * Every US ticker's close for one trading day.
+   *
+   * An empty map is a normal answer, not a failure: weekends and market holidays have
+   * no bars, and the caller cannot know the exchange calendar in advance.
+   */
+  dailyCloses(day: ISODate): Promise<ReadonlyMap<Ticker, number>>;
+}
+
+interface GroupedBar {
+  readonly T?: string;
+  readonly c?: number;
+}
+
+interface GroupedResponse {
+  readonly status?: string;
+  readonly results?: readonly GroupedBar[];
+  readonly error?: string;
+  readonly message?: string;
+}
+
+/** Ticker → close, skipping anything without a usable symbol and a positive price. */
+export function parseGroupedBars(body: GroupedResponse): Map<Ticker, number> {
+  const closes = new Map<Ticker, number>();
+  for (const bar of body.results ?? []) {
+    const symbol = bar.T?.trim().toUpperCase();
+    if (!symbol) continue;
+    if (typeof bar.c !== "number" || !Number.isFinite(bar.c) || bar.c <= 0) continue;
+    closes.set(symbol as Ticker, bar.c);
+  }
+  return closes;
 }
 
 /**
- * Parse Stooq's daily CSV.
+ * Calendar days back from `asOf`, newest first, with weekends dropped.
  *
- * `knownAt` is the close date itself: a closing price is knowable the day it prints,
- * which is what makes prices safe to mix with filings in a point-in-time slice.
+ * Holidays are deliberately not filtered: an exchange calendar is a dependency this
+ * project does not need to carry, and a holiday simply returns no bars. Asking for a
+ * few more days than strictly required is cheaper than being wrong about which traded.
  */
-export function parseStooqCsv(csv: string, ticker: Ticker, entity: Entity): Observation[] {
-  const lines = csv.trim().split(/\r?\n/);
-  const header = lines[0]?.toLowerCase() ?? "";
-  if (!header.startsWith("date")) return []; // Stooq answers "N/D" for unknown symbols
+export function recentDays(asOf: ISODate, count: number): ISODate[] {
+  const days: ISODate[] = [];
+  const cursor = new Date(`${asOf}T00:00:00Z`);
 
-  const columns = header.split(",");
-  const dateIndex = columns.indexOf("date");
-  const closeIndex = columns.indexOf("close");
-  if (dateIndex < 0 || closeIndex < 0) return [];
+  while (days.length < count) {
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) days.push(isoDate(cursor.toISOString()));
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return days;
+}
 
+/** Turn one day's closes into observations for the entities we actually track. */
+export function closesToObservations(
+  day: ISODate,
+  closes: ReadonlyMap<Ticker, number>,
+  entityFor: ReadonlyMap<Ticker, Entity>,
+): Observation[] {
   const rows: Observation[] = [];
-  for (const line of lines.slice(1)) {
-    const cells = line.split(",");
-    const rawDate = cells[dateIndex];
-    const rawClose = cells[closeIndex];
-    if (!rawDate || !rawClose) continue;
-
-    const close = Number(rawClose);
-    if (!Number.isFinite(close) || close <= 0) continue;
-
-    let date: ISODate;
-    try {
-      date = isoDate(rawDate);
-    } catch {
-      continue;
-    }
-
+  for (const [symbol, close] of closes) {
+    const entity = entityFor.get(symbol);
+    if (!entity) continue;
     rows.push(
       observation({
         value: close,
         metric: PRICE_METRIC,
         entity,
-        validAt: date,
-        knownAt: date,
-        source: "stooq",
+        validAt: day,
+        knownAt: day,
+        source: "polygon",
         reliability: "market",
       }),
     );
   }
-
-  return rows.sort((a, b) => a.validAt.localeCompare(b.validAt));
+  return rows;
 }
 
 export function createPriceClient(options: PriceOptions = {}): PriceClient {
   const doFetch = options.fetch ?? ((url, init) => fetch(url, init));
   const cacheDir = options.cacheDir ?? join(CACHE_DIR, "prices");
-  // Stooq publishes no documented limit; this is deliberate politeness.
-  const gate = options.gate ?? rateLimiter(STOOQ_REQUESTS_PER_SECOND);
+  // The free tier is metered per minute, not per second, so the gate is a fraction.
+  const gate = options.gate ?? rateLimiter(POLYGON_REQUESTS_PER_MINUTE / 60);
 
   return {
-    async closes(ticker, entity) {
-      const cachePath = join(cacheDir, `${ticker}.csv`);
+    async dailyCloses(day) {
+      const cachePath = join(cacheDir, `polygon-${day}.json`);
       try {
-        return parseStooqCsv(await readFile(cachePath, "utf8"), ticker, entity);
+        return parseGroupedBars(JSON.parse(await readFile(cachePath, "utf8")) as GroupedResponse);
       } catch {
-        // not cached yet
+        // not cached, or cached badly — fetch it
       }
 
       await gate();
-      const response = await doFetch(stooqUrl(ticker), { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
-      if (!response.ok) throw new Error(`Stooq ${response.status} for ${ticker}`);
+      const key = options.apiKey ?? polygonApiKey();
+      const response = await doFetch(polygonUrl(day, key), { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
 
-      const csv = await response.text();
-      const rows = parseStooqCsv(csv, ticker, entity);
-      if (rows.length > 0) {
-        await mkdir(cacheDir, { recursive: true });
-        await writeFile(cachePath, csv);
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`Polygon rejected the API key (${response.status}) — check POLYGON_API_KEY`);
       }
-      return rows;
+      if (response.status === 429) {
+        throw new Error("Polygon rate limit hit (429) — the free tier allows 5 requests a minute");
+      }
+      if (!response.ok) throw new Error(`Polygon ${response.status} for ${day}`);
+
+      const text = await response.text();
+      let body: GroupedResponse;
+      try {
+        body = JSON.parse(text) as GroupedResponse;
+      } catch {
+        throw new Error(`Polygon returned unparseable JSON for ${day}`);
+      }
+      if (body.error ?? body.message) throw new Error(`Polygon: ${body.error ?? body.message}`);
+
+      // Cache only real trading days. An empty weekend response cached forever would
+      // be indistinguishable from a day we simply have not fetched yet.
+      const closes = parseGroupedBars(body);
+      if (closes.size > 0) {
+        await mkdir(cacheDir, { recursive: true });
+        await writeFile(cachePath, text);
+      }
+      return closes;
     },
   };
 }

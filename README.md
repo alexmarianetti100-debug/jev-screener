@@ -100,7 +100,7 @@ so counting it would expire every judgment nightly and undo the whole thing. The
 real: a cached verdict was formed against the multiples of the day it was made, so a company
 whose price has moved sharply carries a stale valuation until its next filing.
 
-A fully cached run touches neither Stooq nor EDGAR and needs no API key at all, which is what
+A fully cached run touches neither the price source nor EDGAR and needs no API key at all, which is what
 makes `screen_run` cheap enough to call from a conversation.
 
 ## Identity: the CIK, never the ticker
@@ -176,11 +176,11 @@ would have overturned. One pass, one question set, nothing that judges blind.
 
 - **DuckDB takes a single write lock per file**, so one ingest, screen or MCP server at a time. A
   second one fails fast with a message naming the holding PID.
-- **The price source can be unreachable.** Stooq has no status page, and during the live run it
-  was entirely unresponsive from this network. After `PRICE_SOURCE_FAILURE_LIMIT` consecutive
-  failures a run stops asking, records the reason, and continues without multiples — 3,000 doomed
-  requests at 2/second would otherwise be a 25-minute stall to learn what the first twenty
-  already established.
+- **The price source can be unreachable.** After `PRICE_SOURCE_FAILURE_LIMIT` consecutive
+  failures a run stops asking, records the reason, and continues without multiples. This is not
+  hypothetical: the previous source (Stooq) turned out to be unroutable from this network
+  entirely — not down, blocked — and a per-ticker adapter meant 3,000 doomed requests to learn
+  what the first twenty already established.
 
   The visible consequence is instructive: with no prices, jev answered `sufficiency: thin` for
   **every** company it judged. That is the `sufficiency` question doing exactly what it is for —
@@ -188,10 +188,11 @@ would have overturned. One pass, one question set, nothing that judges blind.
 
 ## Four limitations, stated plainly
 
-**1. Prices are fetched one symbol at a time.** Stooq has no bulk endpoint, so the price stage is
-the slowest part of a cold run, and a filer SEC lists no ticker for cannot be priced at all — it
-is judged on fundamentals and filing text, with multiples absent. A dead source trips a circuit
-breaker after a short streak rather than stalling the run for hours.
+**1. Prices are end-of-day, and a filer with no ticker has none.** Polygon's grouped endpoint
+returns every US ticker's close for a day in one request, so the whole universe costs one call
+rather than 3,652. But it is keyed by symbol, so the 310 eligible filers SEC lists no ticker for
+— Exxon Mobil Corp among them — are judged on fundamentals and filing text with multiples
+absent. A dead source trips a circuit breaker rather than stalling the run.
 
 **2. This screener judges quality, not mispricing.** There is no free consensus-estimate feed
 worth using, so nothing here knows what the market expects. It can tell you a business looks
@@ -277,7 +278,7 @@ src/constants.ts     every permitted operational constant, in one place
 src/observation.ts   branded units, Observation<T>, the as-of reader
 src/store.ts         DuckDB schema, point-in-time reads, runs + judgment cache
 src/edgar.ts         bulk ZIP ingest (incl. a ZIP64 reader), throttle, tag resolver, SIC
-src/prices.ts        Stooq adapter, lazy per-survivor fetch
+src/prices.ts        Polygon adapter, one request per trading day
 src/universe.ts      eligibility predicates (presence/recency/completeness only)
 src/metrics.ts       arithmetic only, zero judgment
 src/peers.ts         universe-wide and sector metric distributions
@@ -292,7 +293,7 @@ There is deliberately no `scoring.ts`. If you find yourself wanting one, the des
 violated.
 
 The tests are offline: jev, EDGAR (including the bulk ZIP path, exercised against real archives
-built byte by byte in the test) and Stooq are all stubbed. `npm test` needs no network and no API
+built byte by byte in the test) and Polygon are all stubbed. `npm test` needs no network and no API
 key.
 
 ## Data sources
@@ -302,7 +303,12 @@ Two, both free, neither needing an API key.
 - **SEC EDGAR** — bulk `companyfacts.zip` and `submissions.zip`, the daily index for updates, and
   filing text fetched on demand for stage-2 survivors only. Throttled to 10 requests/second inside
   the adapter, not at the call sites. Sector comes from the SIC code in the submissions record.
-- **Stooq** — keyless daily OHLCV CSV, fetched lazily at ~2 requests/second and cached.
+- **Polygon** — grouped daily aggregates: one request returns every US ticker's close for a
+  trading day, so a routine refresh is a single call and a two-year backfill about 500. The free
+  tier's five requests a minute is ample at that shape. A completed trading day never changes, so
+  its response is cached permanently; an empty one (weekend, holiday) is not cached, because that
+  is indistinguishable from a day not yet fetched. Needs `POLYGON_API_KEY`; without it the price
+  stage is skipped and the run says so.
 
 Raw payloads are cached under `data/`, which is gitignored.
 

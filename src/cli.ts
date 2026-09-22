@@ -17,7 +17,7 @@ import { cacheKeyFor, throughCache } from "./cache.ts";
 import { createClient } from "./client.ts";
 import {
   DEFAULT_SCREEN_LIMIT, FILING_FETCH_POOL_SIZE, INGEST_BATCH_SIZE, JEV_POOL_SIZE,
-  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION,
+  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION, PRICE_BACKFILL_DAYS,
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
@@ -30,7 +30,7 @@ import {
   type CIK, type Entity, type ISODate, type Observation, type Ticker,
 } from "./observation.ts";
 import { buildPeerTables, overlayDistributions, peerContextFor, type PeerTables } from "./peers.ts";
-import { createPriceClient, type PriceClient } from "./prices.ts";
+import { closesToObservations, createPriceClient, hasPolygonKey, recentDays, type PriceClient } from "./prices.ts";
 import { runPool } from "./pool.ts";
 import {
   askJudgment, assemble, assertRunnable,
@@ -142,9 +142,9 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const slice = await options.store.sliceAsOf(asOf);
     const universe = buildUniverse(profiles, slice, asOf);
     log(`refreshing prices for ${universe.eligible.length} eligible companies…`);
-    const profileOf = new Map(profiles.map((profile) => [profile.entity, profile]));
-    const targets = priceTargets(universe.eligible.map((v) => v.entity), profileOf);
-    priceObservations = (await ingestPrices(options.store, prices, targets, log)).stored;
+    const days = recentDays(asOf, PRICE_BACKFILL_DAYS);
+    log(`refreshing ${days.length} days of closes…`);
+    priceObservations = (await ingestPrices(options.store, prices, days, entityIndex(profiles), log)).stored;
   }
 
   return { filers: profiles.length, observations, priceObservations, skipped };
@@ -165,25 +165,32 @@ export interface PriceIngestReport {
  * constraint, so concurrency would buy nothing. The circuit breaker is what keeps a
  * dead source from turning that into a 25-minute stall.
  */
-export interface PriceTarget {
-  readonly entity: Entity;
-  readonly ticker: Ticker;
+/** Ticker → the filer it belongs to, for the symbols we actually track. */
+export function entityIndex(profiles: readonly FilerProfile[]): Map<Ticker, Entity> {
+  const index = new Map<Ticker, Entity>();
+  for (const profile of profiles) {
+    for (const symbol of profile.tickers) {
+      // First writer wins, so a symbol two filers claim resolves the same way here as
+      // it does in resolveTickers rather than depending on iteration order.
+      if (!index.has(symbol)) index.set(symbol, profile.entity);
+    }
+  }
+  return index;
 }
 
-/** Filers we can actually price: Stooq is addressed by symbol, so no symbol, no price. */
-export const priceTargets = (
-  entities: readonly Entity[],
-  profileOf: ReadonlyMap<Entity, FilerProfile>,
-): PriceTarget[] =>
-  entities.flatMap((entity) => {
-    const ticker = profileOf.get(entity)?.tickers[0];
-    return ticker ? [{ entity, ticker }] : [];
-  });
-
+/**
+ * Pull daily closes, one request per trading day.
+ *
+ * A day is the unit, not a company: the source returns every US ticker at once, so
+ * fetching the whole universe costs the same as fetching one name. An empty response
+ * is a weekend or a holiday, which is not a failure — only a throw is, and a streak
+ * of those trips the breaker so an unreachable source costs seconds rather than hours.
+ */
 export async function ingestPrices(
   store: Store,
   prices: PriceClient,
-  targets: readonly PriceTarget[],
+  days: readonly ISODate[],
+  entityFor: ReadonlyMap<Ticker, Entity>,
   log: (message: string) => void,
 ): Promise<PriceIngestReport> {
   let stored = 0;
@@ -191,22 +198,25 @@ export async function ingestPrices(
   let failed = 0;
   let consecutiveFailures = 0;
 
-  for (const { entity, ticker } of targets) {
+  for (const day of days) {
     attempted++;
     try {
-      const rows = await prices.closes(ticker, entity);
-      stored += await store.appendObservations(rows);
-      await store.recordFetch("stooq", "prices", true, ticker);
+      const closes = await prices.dailyCloses(day);
       consecutiveFailures = 0;
+      if (closes.size === 0) continue; // not a trading day
+
+      const rows = closesToObservations(day, closes, entityFor);
+      stored += await store.appendObservations(rows);
+      await store.recordFetch("polygon", "prices", true, `${day}: ${rows.length} of ${closes.size} tickers matched`);
     } catch (error) {
       failed++;
       consecutiveFailures++;
-      await store.recordFetch("stooq", "prices", false, `${ticker}: ${(error as Error).message}`);
+      await store.recordFetch("polygon", "prices", false, `${day}: ${(error as Error).message}`);
 
       if (consecutiveFailures >= PRICE_SOURCE_FAILURE_LIMIT) {
         log(
           `  price source unreachable after ${consecutiveFailures} consecutive failures ` +
-            `(${attempted} of ${targets.length} attempted) — continuing without multiples`,
+            `(${attempted} of ${days.length} days attempted) — continuing without multiples`,
         );
         return { stored, attempted, failed, abandoned: true };
       }
@@ -294,11 +304,11 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
   const candidates = allRows.filter(
     (row) => (!wanted || wanted.has(row.entity)) && (!options.sector || row.sector === options.sector),
   );
-  log(`judging ${candidates.length} companies…`);
-
   let inputTokens = 0;
   let outputTokens = 0;
   const failures: string[] = [];
+
+  log(`screening ${candidates.length} of ${universe.eligible.length} eligible companies…`);
 
   // ── Judgment ──
   //
@@ -326,8 +336,14 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     // batch, which is the one thing the peer context exists to prevent.
     const survivors = survivorRows.map((row) => row.entity);
     log(`fetching prices for ${survivors.length} survivors…`);
-    const priceReport = await ingestPrices(
-      store, options.prices ?? createPriceClient(), priceTargets(survivors, profileOf), log);
+    // No key configured is a known state, not twenty identical failures. Tests inject
+    // a client, so an injected one is always used regardless of the environment.
+    const priceReport = options.prices || hasPolygonKey()
+      ? await ingestPrices(
+          store, options.prices ?? createPriceClient(),
+          recentDays(asOf, PRICE_BACKFILL_DAYS), entityIndex(profiles), log)
+      : (log("  POLYGON_API_KEY not set — skipping prices, multiples will be absent"),
+         { stored: 0, attempted: 0, failed: 0, abandoned: false });
     if (priceReport.abandoned) {
       failures.push(
         `price source gave up after ${priceReport.failed} failures; ` +
@@ -335,9 +351,18 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
       );
     }
 
-    const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
-    pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
-    judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
+    // Re-slice only if prices actually landed. A slice is held entirely in memory,
+    // so building a second one beside the first doubles the peak — on the live
+    // universe that is two multi-million-row slices at once, which exhausts the
+    // default heap. When the price source is unreachable, `stored` is 0 and the new
+    // slice would be identical to the one we already have.
+    if (priceReport.stored > 0) {
+      const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
+      pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
+      judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
+    } else {
+      log("  no prices stored — judging on fundamentals and filing text alone");
+    }
 
     // Filing text, on the other hand, is only worth fetching for what we will ask
     // about: ~15,000 tokens of MD&A that a cache hit would never read.

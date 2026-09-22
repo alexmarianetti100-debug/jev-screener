@@ -17,8 +17,22 @@
 /** SEC's documented ceiling for automated access. */
 export const EDGAR_REQUESTS_PER_SECOND = 10;
 
-/** Stooq publishes no limit; this is deliberate politeness for a free service. */
-export const STOOQ_REQUESTS_PER_SECOND = 2;
+/**
+ * Polygon's free tier, metered per minute rather than per second.
+ *
+ * Restrictive-sounding and not, because the endpoint is bulk: one request returns
+ * every US ticker's close for a day, so a routine refresh needs one call and a
+ * two-year backfill about 500.
+ */
+export const POLYGON_REQUESTS_PER_MINUTE = 5;
+
+/**
+ * Weekdays of closes to pull on a normal run, newest first.
+ *
+ * More than one because holidays return no bars and the exchange calendar is not
+ * something this project carries. Spend and freshness only.
+ */
+export const PRICE_BACKFILL_DAYS = 5;
 
 /**
  * Consecutive price-source failures before this run stops asking.

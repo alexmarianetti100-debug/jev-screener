@@ -178,8 +178,9 @@ test("the only tunable numbers live in constants.ts, and are operational", async
     "JEV_POOL_SIZE",
     "MAX_ANNUAL_REPORT_AGE_MONTHS",
     "MIN_REVENUE_QUARTERS",
+    "POLYGON_REQUESTS_PER_MINUTE",
+    "PRICE_BACKFILL_DAYS",
     "PRICE_SOURCE_FAILURE_LIMIT",
     "QUESTION_SET_VERSION",
-    "STOOQ_REQUESTS_PER_SECOND",
   ]);
 });

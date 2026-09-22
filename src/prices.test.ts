@@ -1,109 +1,113 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { cik, ticker } from "./observation.ts";
-import { createPriceClient, parseStooqCsv, stooqUrl } from "./prices.ts";
+import { cik, isoDate, ticker, type Entity, type Ticker } from "./observation.ts";
+import {
+  closesToObservations, createPriceClient, parseGroupedBars, polygonUrl, recentDays,
+} from "./prices.ts";
 
-const ACME = ticker("ACME");
-const ACME_CIK = cik("320193");
 const noWait = async (): Promise<void> => {};
+const scratch = (): Promise<string> => mkdtemp(join(tmpdir(), "jev-prices-"));
 
-const CSV = `Date,Open,High,Low,Close,Volume
-2026-08-26,10.10,10.50,10.00,10.40,120000
-2026-08-27,10.40,10.90,10.30,10.85,98000
-2026-08-28,10.85,11.00,10.60,10.75,110000`;
+const bars = (results: unknown[]): string => JSON.stringify({ status: "OK", results });
 
-test("Stooq's URL uses the lower-case .us suffix", () => {
-  assert.equal(stooqUrl(ACME), "https://stooq.com/q/d/l/?s=acme.us&i=d");
+test("the grouped response keeps usable bars and drops the rest", () => {
+  const closes = parseGroupedBars(JSON.parse(bars([
+    { T: "aapl", c: 338.98 },
+    { T: "MSFT", c: 501.2 },
+    { T: "BAD", c: 0 },          // a zero close is not a price
+    { T: "WORSE", c: -3 },
+    { T: "NAN", c: Number.NaN },
+    { T: "", c: 10 },            // no symbol to key on
+    { c: 12 },
+  ])));
+
+  assert.deepEqual([...closes.entries()].sort(), [["AAPL", 338.98], ["MSFT", 501.2]]);
 });
 
-test("a close is knowable on its own date", () => {
-  const rows = parseStooqCsv(CSV, ACME, ACME_CIK);
-
-  assert.equal(rows.length, 3);
-  const last = rows.at(-1)!;
-  assert.equal(last.value, 10.75);
-  // knownAt === validAt is what makes prices safe to mix with filings in a slice.
-  assert.equal(last.validAt, "2026-08-28");
-  assert.equal(last.knownAt, "2026-08-28");
-  assert.equal(last.reliability, "market");
-  assert.equal(last.metric, "close");
+test("a day with no bars is an empty map, not an error", () => {
+  assert.equal(parseGroupedBars(JSON.parse(JSON.stringify({ status: "OK" }))).size, 0);
+  assert.equal(parseGroupedBars(JSON.parse(bars([]))).size, 0);
 });
 
-test("rows come back oldest first", () => {
-  const rows = parseStooqCsv(CSV, ACME, ACME_CIK);
-  assert.deepEqual(rows.map((r) => r.validAt), ["2026-08-26", "2026-08-27", "2026-08-28"]);
+test("recent days skip weekends and run newest first", () => {
+  // 2026-09-21 is a Monday, so walking back must jump the weekend.
+  const days = recentDays(isoDate("2026-09-21"), 4);
+  assert.deepEqual(days, ["2026-09-21", "2026-09-18", "2026-09-17", "2026-09-16"]);
+  assert.deepEqual([...days].sort().reverse(), days, "newest first");
 });
 
-test("Stooq's 'no data' answer yields no rows rather than an error", () => {
-  assert.deepEqual(parseStooqCsv("N/D", ACME, ACME_CIK), []);
-  assert.deepEqual(parseStooqCsv("", ACME, ACME_CIK), []);
+test("a close is knowable on its own date, and only for tickers we track", () => {
+  const entityFor = new Map<Ticker, Entity>([[ticker("AAPL"), cik(320193)]]);
+  const rows = closesToObservations(
+    isoDate("2026-09-21"),
+    new Map<Ticker, number>([[ticker("AAPL"), 338.98], [ticker("NOTOURS"), 12]]),
+    entityFor,
+  );
+
+  assert.equal(rows.length, 1, "a ticker with no filer is not an observation");
+  const row = rows[0]!;
+  assert.equal(row.entity, cik(320193));
+  assert.equal(row.metric, "close");
+  assert.equal(row.value, 338.98);
+  assert.equal(row.validAt, "2026-09-21");
+  assert.equal(row.knownAt, "2026-09-21", "a close is knowable the day it prints");
+  assert.equal(row.reliability, "market");
 });
 
-test("malformed and non-positive rows are skipped, not zero-filled", () => {
-  const messy = `Date,Open,High,Low,Close,Volume
-2026-08-26,10,10,10,10.40,1
-not-a-date,10,10,10,10.50,1
-2026-08-27,10,10,10,,1
-2026-08-28,10,10,10,0,1
-2026-08-29,10,10,10,11.10,1`;
-
-  const rows = parseStooqCsv(messy, ACME, ACME_CIK);
-  assert.deepEqual(rows.map((r) => r.value), [10.4, 11.1]);
-});
-
-test("column order is read from the header, not assumed", () => {
-  const reordered = `Date,Close,Open,High,Low,Volume
-2026-08-26,42.50,10,10,10,1`;
-
-  assert.equal(parseStooqCsv(reordered, ACME, ACME_CIK)[0]?.value, 42.5);
-});
-
-test("a fetched series is cached, and the second call does not hit the network", async () => {
-  const cacheDir = await mkdtemp(join(tmpdir(), "jev-prices-"));
+test("one request covers the whole market, and a trading day is cached forever", async () => {
+  const cacheDir = await scratch();
   let calls = 0;
-
   const client = createPriceClient({
-    cacheDir, gate: noWait,
-    fetch: async () => {
+    apiKey: "test-key", gate: noWait, cacheDir,
+    fetch: async (url) => {
       calls++;
-      return new Response(CSV);
+      assert.match(url, /adjusted=true/);
+      return new Response(bars([{ T: "AAPL", c: 1 }, { T: "MSFT", c: 2 }]));
     },
   });
 
-  const first = await client.closes(ACME, ACME_CIK);
-  const second = await client.closes(ACME, ACME_CIK);
+  const first = await client.dailyCloses(isoDate("2026-09-21"));
+  const second = await client.dailyCloses(isoDate("2026-09-21"));
 
-  assert.equal(calls, 1);
-  assert.equal(first.length, 3);
-  assert.deepEqual(second.map((r) => r.value), first.map((r) => r.value));
+  assert.equal(first.size, 2, "every ticker arrives in a single call");
+  assert.equal(second.size, 2);
+  assert.equal(calls, 1, "a completed trading day never changes, so it is fetched once");
 });
 
-test("an empty series is not cached, so a later run can retry", async () => {
-  const cacheDir = await mkdtemp(join(tmpdir(), "jev-prices-"));
-  let calls = 0;
-
+test("an empty day is not cached — it is indistinguishable from one not yet fetched", async () => {
+  const cacheDir = await scratch();
   const client = createPriceClient({
-    cacheDir, gate: noWait,
-    fetch: async () => {
-      calls++;
-      return new Response(calls === 1 ? "N/D" : CSV);
-    },
+    apiKey: "test-key", gate: noWait, cacheDir,
+    fetch: async () => new Response(bars([])),
   });
 
-  assert.deepEqual(await client.closes(ACME, ACME_CIK), []);
-  assert.equal((await client.closes(ACME, ACME_CIK)).length, 3);
-  assert.equal(calls, 2);
+  assert.equal((await client.dailyCloses(isoDate("2026-09-19"))).size, 0);
+  assert.deepEqual(await readdir(cacheDir), [], "nothing written for a holiday or weekend");
 });
 
-test("a non-2xx response is an error rather than a silent gap", async () => {
-  const cacheDir = await mkdtemp(join(tmpdir(), "jev-prices-"));
+test("a rejected key says so, rather than looking like an outage", async () => {
   const client = createPriceClient({
-    cacheDir, gate: noWait,
-    fetch: async () => new Response("rate limited", { status: 429 }),
+    apiKey: "bad", gate: noWait, cacheDir: await scratch(),
+    fetch: async () => new Response("nope", { status: 401 }),
   });
 
-  await assert.rejects(() => client.closes(ACME, ACME_CIK), /Stooq 429/);
+  await assert.rejects(client.dailyCloses(isoDate("2026-09-21")), /POLYGON_API_KEY/);
+});
+
+test("a rate limit is named, so it is not mistaken for a dead source", async () => {
+  const client = createPriceClient({
+    apiKey: "test-key", gate: noWait, cacheDir: await scratch(),
+    fetch: async () => new Response("slow down", { status: 429 }),
+  });
+
+  await assert.rejects(client.dailyCloses(isoDate("2026-09-21")), /5 requests a minute/);
+});
+
+test("the key is encoded into the query, not interpolated raw", () => {
+  const url = polygonUrl(isoDate("2026-09-21"), "a key/with+chars");
+  assert.match(url, /apiKey=a%20key%2Fwith%2Bchars/);
+  assert.match(url, /\/2026-09-21\?/);
 });

@@ -9,9 +9,9 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env src/index.ts",
     "check": "node --env-file-if-exists=.env src/check.ts",
-    "ingest": "node --env-file-if-exists=.env src/cli.ts ingest",
-    "screen": "node --env-file-if-exists=.env src/cli.ts screen",
-    "mcp": "node --env-file-if-exists=.env src/mcp.ts",
+    "ingest": "node --max-old-space-size=8192 --env-file-if-exists=.env src/cli.ts ingest",
+    "screen": "node --max-old-space-size=8192 --env-file-if-exists=.env src/cli.ts screen",
+    "mcp": "node --max-old-space-size=8192 --env-file-if-exists=.env src/mcp.ts",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",

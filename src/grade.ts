@@ -27,6 +27,7 @@
 
 import type { ISODate, Observation, ObservationSlice } from "./observation.ts";
 import { PRICE_METRIC } from "./observation.ts";
+import { BENCHMARK_ENTITY, BENCHMARK_SYMBOL } from "./constants.ts";
 
 /** Trading-day horizons, roughly one month through two years. */
 export const HORIZONS: readonly { readonly label: string; readonly days: number }[] = [
@@ -124,6 +125,16 @@ export interface HorizonResult {
   /** The same universe ranked by cash conversion alone, top N by count of included. */
   readonly baseline?: BucketResult;
   readonly baselineSpread?: number;
+  /**
+   * The index over the same window.
+   *
+   * Without it a cohort that rose is indistinguishable from a rising tide, and the
+   * include-minus-exclude spread can be positive while every name lost to simply
+   * owning the market.
+   */
+  readonly market?: { readonly symbol: string; readonly return: number };
+  /** Included minus the market. Negative means the picks were not worth the trouble. */
+  readonly vsMarket?: number;
 }
 
 export interface GradeReport {
@@ -240,6 +251,13 @@ export function gradeRun(
       .slice(0, included.length);
     const baselineReturns = returnsFor(ranked);
 
+    const benchmark = slice.series(BENCHMARK_ENTITY as never, PRICE_METRIC);
+    const marketFrom = priceOn(benchmark, run.asOf);
+    const marketTo = priceOn(benchmark, end);
+    const marketReturn = marketFrom !== undefined && marketTo !== undefined && marketFrom > 0
+      ? marketTo / marketFrom - 1
+      : undefined;
+
     const includedResult = summarise(includedReturns);
     const excludedResult = summarise(excludedReturns);
     const baselineResult = summarise(baselineReturns);
@@ -259,6 +277,10 @@ export function gradeRun(
       ...(baselineResult && excludedResult
         ? { baselineSpread: baselineResult.meanReturn - excludedResult.meanReturn }
         : {}),
+      ...(marketReturn !== undefined ? { market: { symbol: BENCHMARK_SYMBOL, return: marketReturn } } : {}),
+      ...(marketReturn !== undefined && includedResult
+        ? { vsMarket: includedResult.meanReturn - marketReturn }
+        : {}),
     };
   });
 
@@ -274,6 +296,7 @@ export function gradeRun(
       "Overlapping holding periods across runs are autocorrelated; treat repeated cohorts as fewer independent observations than they appear.",
       "Returns are price-only. Dividends are not in this data, which understates high-yield names.",
       "Beating the cash-conversion baseline is the bar that matters. Beating zero is not.",
+      `Beating ${BENCHMARK_SYMBOL} is the other bar: a positive include-minus-exclude spread can still lose to simply owning the market.`,
       "Delisted names are counted, not dropped. `meanReturn` excludes them and `meanIfDelistedAreTotalLoss` treats each as -100%; the truth is between, and a wide gap means the result turns on names that stopped trading.",
     ],
   };

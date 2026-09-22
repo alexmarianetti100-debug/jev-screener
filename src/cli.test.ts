@@ -587,9 +587,19 @@ test("only a filer's primary symbol carries its price", async () => {
   };
 
   const index = entityIndex([bmo]);
-  assert.equal(index.size, 1, "one symbol, so one close a day");
   assert.equal(index.get(ticker("BMO")), cik(927971));
   assert.equal(index.get(ticker("BULZ")), undefined, "an issued ETN is not the issuer's price");
+  // One symbol for this filer, so one close a day. The map also carries the
+  // benchmark, which belongs to no filer and is counted separately.
+  assert.equal([...index.values()].filter((e) => e === cik(927971)).length, 1);
+});
+
+test("the benchmark is priced even though it belongs to no filer", async () => {
+  const { entityIndex } = await import("./cli.ts");
+  const { BENCHMARK_SYMBOL, BENCHMARK_ENTITY } = await import("./constants.ts");
+  // Its issuing trust is not an operating filer, so it cannot arrive through the
+  // normal path — and without it a cohort that rose cannot be told from a rising tide.
+  assert.equal(entityIndex([]).get(ticker(BENCHMARK_SYMBOL)), BENCHMARK_ENTITY);
 });
 
 test("a filer with no symbol at all is simply not priced", async () => {
@@ -598,5 +608,6 @@ test("a filer with no symbol at all is simply not priced", async () => {
     entity: cik(34088), cik: cik(34088), tickers: [],
     name: "EXXON MOBIL CORP", sic: "2911", sector: "manufacturing", filings: [],
   };
-  assert.equal(entityIndex([exxon]).size, 0);
+  const index = entityIndex([exxon]);
+  assert.equal([...index.values()].filter((e) => e === cik(34088)).length, 0);
 });

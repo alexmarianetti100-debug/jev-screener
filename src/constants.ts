@@ -87,6 +87,19 @@ export const INGEST_BATCH_SIZE = 50_000;
  */
 export const FILING_EXCERPT_CHARS = 30_000;
 
+/**
+ * The index the scorecard measures against, and the reserved id it is stored under.
+ *
+ * Without it, a cohort that rose 9% looks like a result rather than a rising tide.
+ * The issuing trust is not an operating filer, so the benchmark cannot arrive through
+ * the normal entity path and gets a CIK no real filer can hold.
+ *
+ * A measurement parameter: changing it changes what "beat the market" is measured
+ * against, never what any company looks like.
+ */
+export const BENCHMARK_SYMBOL = "SPY";
+export const BENCHMARK_ENTITY = "0000000000";
+
 // ── Versioning ────────────────────────────────────────────────────────────────
 
 /**

@@ -17,7 +17,7 @@ import { cacheKeyFor, throughCache } from "./cache.ts";
 import { createClient } from "./client.ts";
 import {
   DEFAULT_SCREEN_LIMIT, FILING_FETCH_POOL_SIZE, INGEST_BATCH_SIZE, JEV_POOL_SIZE,
-  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION, PRICE_BACKFILL_DAYS, FILING_EXCERPT_CHARS,
+  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION, PRICE_BACKFILL_DAYS, FILING_EXCERPT_CHARS, BENCHMARK_SYMBOL, BENCHMARK_ENTITY,
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
@@ -60,6 +60,8 @@ export interface IngestOptions {
   readonly pricesAll?: boolean;
   /** Refresh closes without touching the bulk archives. */
   readonly pricesOnly?: boolean;
+  /** Refetch days already on file, for when the ticker map has changed. */
+  readonly reprice?: boolean;
   readonly log?: (message: string) => void;
 }
 
@@ -86,10 +88,16 @@ export async function refreshPrices(
   prices: PriceClient,
   profiles: readonly FilerProfile[],
   log: (message: string) => void,
+  options: { readonly reprice?: boolean } = {},
 ): Promise<number> {
   const days = recentDays(todayISO(), PRICE_BACKFILL_DAYS);
   log(`refreshing ${days.length} days of closes…`);
-  return (await ingestPrices(store, prices, days, entityIndex(profiles), log)).stored;
+  const stored = (await ingestPrices(store, prices, days, entityIndex(profiles), log, options)).stored;
+  if (options.reprice) {
+    const removed = await store.compact();
+    if (removed > 0) log(`  compacted ${removed} rows already on file`);
+  }
+  return stored;
 }
 
 export async function runIngest(options: IngestOptions): Promise<IngestReport> {
@@ -99,7 +107,8 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const log = options.log ?? (() => {});
     const profiles = await options.store.loadFilers();
     const priceObservations = await refreshPrices(
-      options.store, options.prices ?? createPriceClient(), profiles, log);
+      options.store, options.prices ?? createPriceClient(), profiles, log,
+      options.reprice ? { reprice: true } : {});
     log(priceObservations > 0
       ? `  ${priceObservations} new price points`
       : "  no new price points — every day requested was already on file");
@@ -216,6 +225,9 @@ export function entityIndex(profiles: readonly FilerProfile[]): Map<Ticker, Enti
     // it does in resolveTickers rather than depending on iteration order.
     if (!index.has(primary)) index.set(primary, profile.entity);
   }
+  // The benchmark rides along on the same day files. A cohort that rose 9% is not a
+  // result if the market rose 10%, and without this there is nothing to say so.
+  index.set(BENCHMARK_SYMBOL as Ticker, BENCHMARK_ENTITY as Entity);
   return index;
 }
 
@@ -233,6 +245,7 @@ export async function ingestPrices(
   days: readonly ISODate[],
   entityFor: ReadonlyMap<Ticker, Entity>,
   log: (message: string) => void,
+  options: { readonly reprice?: boolean } = {},
 ): Promise<PriceIngestReport> {
   let stored = 0;
   let attempted = 0;
@@ -242,7 +255,11 @@ export async function ingestPrices(
   // Days already on file are skipped outright. Their closes cannot change, and every
   // screen run calls this — without the check the same facts were appended once per
   // run, which had put eight copies of each close in the table.
-  const already = await store.observedPeriods(PRICE_METRIC);
+  //
+  // The skip is per day, not per company, so a symbol added to the map after a day
+  // was stored never gets that day's close. `reprice` is the way out: it refetches
+  // from the day cache, and compaction folds the rows that were already there.
+  const already = options.reprice ? new Set<ISODate>() : await store.observedPeriods(PRICE_METRIC);
 
   for (const day of days) {
     if (already.has(day)) continue;
@@ -923,7 +940,8 @@ jev stock screener
 
   npm run ingest  [-- --prices-all]
       Backfill from the SEC bulk archives. --prices-all also refreshes closes;
-      --prices-only refreshes closes alone, without re-reading the archives
+      --prices-only refreshes closes alone, without re-reading the archives;
+      --reprice refetches days already stored, for when the ticker map changed
       prices for the whole eligible universe (slow).
 
   npm run screen  [-- --as-of=YYYY-MM-DD] [--ticker=AAPL,MSFT] [--sector=retail]
@@ -953,7 +971,8 @@ async function main(): Promise<void> {
   try {
     if (command === "ingest") {
       const report = await runIngest({
-        store, pricesAll: flags.has("prices-all"), pricesOnly: flags.has("prices-only"), log,
+        store, pricesAll: flags.has("prices-all"), pricesOnly: flags.has("prices-only"),
+        reprice: flags.has("reprice"), log,
       });
       // A prices-only run never reads the archives, so reporting archive counters
       // for it says "0 skipped" about work that never happened.

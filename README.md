@@ -215,6 +215,11 @@ Three things it reports, and each exists to stop a specific way of fooling yours
   valuable thing this can tell you.
 - **`pending`, not zero.** A horizon the price history does not reach yet reports the date
   it needs and no number. Horizons are 1m, 3m, 6m, 1y, 2y.
+- **The market, beside the picks.** A cohort that rose 9% is not a result if the index
+  rose 10%. `SPY` rides along on the same day files under a reserved CIK no real filer
+  can hold, because its issuing trust is not an operating filer and cannot arrive through
+  the normal path. Reports carry `market` and `vsMarket`, and the include-minus-exclude
+  spread can be positive while every pick lost to simply owning the index.
 - **Delisted names counted, not dropped.** A pick that goes bankrupt disappears from the
   price feed, and silently excluding it removes the worst outcomes from the record — the
   classic way a bad strategy reads as a good one. Bankruptcy and acquisition both end a

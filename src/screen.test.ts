@@ -168,6 +168,8 @@ test("the only tunable numbers live in constants.ts, and are operational", async
   // Every constant must be one an operator could turn without deciding anything
   // about a company: throughput, spend, cadence, data availability, or display.
   assert.deepEqual(exported.sort(), [
+    "BENCHMARK_ENTITY",
+    "BENCHMARK_SYMBOL",
     "BULK_DOWNLOAD_TIMEOUT_MS",
     "CACHE_DIR",
     "CONTAMINATION_WINDOW_DAYS",

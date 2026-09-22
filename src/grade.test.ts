@@ -202,3 +202,45 @@ test("the caveats name the survivorship treatment, so a reader cannot miss it", 
   );
   assert.ok(report.caveats.some((c) => /Delisted names are counted, not dropped/.test(c)));
 });
+
+// ── The market ────────────────────────────────────────────────────────────────
+
+test("a cohort that rose is measured against the tide that lifted it", async () => {
+  const { BENCHMARK_ENTITY } = await import("./constants.ts");
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const rows = [
+    close(String(ACME), "2026-09-21", 100), close(String(ACME), end, 105),        // pick: +5%
+    close(String(BETA), "2026-09-21", 100), close(String(BETA), end, 102),        // pass: +2%
+    close(BENCHMARK_ENTITY, "2026-09-21", 100), close(BENCHMARK_ENTITY, end, 110), // market: +10%
+  ];
+
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [
+      { entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 },
+      { entity: String(BETA), label: "BETA", sector: "retail", verdict: "exclude", attractiveness: 1.0 },
+    ],
+  }, buildSlice(rows, TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+
+  assert.equal(oneMonth.market?.symbol, "SPY");
+  assert.ok(Math.abs(oneMonth.market!.return - 0.1) < 1e-9);
+  // The picks beat what was passed over and still lost to owning the index. Reporting
+  // only the spread would have called this a win.
+  assert.ok(oneMonth.spread! > 0, "positive against the passed-over names");
+  assert.ok(oneMonth.vsMarket! < 0, "and negative against the market");
+  assert.ok(Math.abs(oneMonth.vsMarket! - -0.05) < 1e-9);
+});
+
+test("no benchmark data means no market claim, not a zero", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [{ entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 }],
+  }, buildSlice([close(String(ACME), "2026-09-21", 100), close(String(ACME), end, 105)], TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+  assert.equal(oneMonth.market, undefined);
+  assert.equal(oneMonth.vsMarket, undefined);
+});

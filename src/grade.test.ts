@@ -7,6 +7,12 @@ const ACME = cik(1);
 const BETA = cik(2);
 const TODAY = isoDate("2028-01-03");
 
+const addDays = (day: string, days: number): string => {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
 const close = (entity: string, day: string, value: number): Observation =>
   observation({
     value, metric: "close", entity: entity as never,
@@ -102,4 +108,97 @@ test("a report refuses to imply significance from one cohort", () => {
   assert.ok(report.caveats.some((c) => /No significance can be claimed/.test(c)));
   assert.ok(report.caveats.some((c) => /autocorrelated/.test(c)));
   assert.ok(report.caveats.some((c) => /Dividends are not in this data/.test(c)));
+});
+
+// ── Survivorship ──────────────────────────────────────────────────────────────
+
+test("a pick that stops trading is counted, not quietly dropped", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const rows = [
+    // ACME was picked and went to zero: priced at entry, never seen again.
+    close(String(ACME), "2026-09-21", 100),
+    // BETA was picked and doubled, and is still trading today.
+    close(String(BETA), "2026-09-21", 100), close(String(BETA), end, 200), close(String(BETA), TODAY, 210),
+  ];
+
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [
+      { entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 },
+      { entity: String(BETA), label: "BETA", sector: "retail", verdict: "include", attractiveness: 3.8 },
+    ],
+  }, buildSlice(rows, TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+
+  // Dropping ACME would report +100% on a book that lost half its names.
+  assert.equal(oneMonth.included?.delisted, 1, "the disappearance is recorded");
+  assert.equal(oneMonth.included?.n, 1, "one name actually priced end to end");
+  assert.ok(Math.abs(oneMonth.included!.meanReturn - 1) < 1e-9, "the optimistic bound ignores it");
+  // (+100% and -100%) / 2 = 0.
+  assert.ok(Math.abs(oneMonth.included!.meanIfDelistedAreTotalLoss) < 1e-9, "the pessimistic bound does not");
+});
+
+test("a gap at the horizon is not a delisting", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const rows = [
+    close(String(ACME), "2026-09-21", 100),
+    // Nothing near `end`, but trading again well after: a hole, not an outcome.
+    close(String(ACME), addDays(end, 40), 130), close(String(ACME), TODAY, 140),
+  ];
+
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [{ entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 }],
+  }, buildSlice(rows, TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+  assert.equal(oneMonth.included?.gaps, 1, "counted as missing data");
+  assert.equal(oneMonth.included?.delisted, 0, "and not as a total loss");
+});
+
+test("the spread is reported on both bounds, so survivorship cannot hide in it", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const rows = [
+    close(String(ACME), "2026-09-21", 100),                                              // pick, delisted
+    close(String(BETA), "2026-09-21", 100), close(String(BETA), end, 110), close(String(BETA), TODAY, 115),
+  ];
+
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [
+      { entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 },
+      { entity: String(BETA), label: "BETA", sector: "retail", verdict: "exclude", attractiveness: 1.0 },
+    ],
+  }, buildSlice(rows, TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+  // Every pick vanished, so the optimistic spread is computed on nothing and the
+  // pessimistic one shows the truth: the pick lost everything, the pass rose 10%.
+  assert.equal(oneMonth.included?.delisted, 1);
+  assert.ok(Math.abs(oneMonth.spreadIfDelistedAreTotalLoss! - -1.1) < 1e-9, "-100% against +10%");
+  assert.ok(oneMonth.spreadIfDelistedAreTotalLoss! < (oneMonth.spread ?? 0), "the pessimistic bound is worse");
+});
+
+test("a company that never had a price is unpriced, not delisted", () => {
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [
+      { entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 },
+      { entity: String(BETA), label: "BETA", sector: "retail", verdict: "include", attractiveness: 3.8 },
+    ],
+  }, buildSlice([close(String(BETA), "2026-09-21", 100), close(String(BETA), horizonEnd(isoDate("2026-09-21"), 21), 110)], TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+  // A filer with no ticker never entered the measurement; it did not fail in it.
+  assert.equal(oneMonth.included?.unpriced, 1);
+  assert.equal(oneMonth.included?.delisted, 0);
+});
+
+test("the caveats name the survivorship treatment, so a reader cannot miss it", () => {
+  const report = gradeRun(
+    { runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1", roster: roster("include") },
+    buildSlice([], TODAY), TODAY,
+  );
+  assert.ok(report.caveats.some((c) => /Delisted names are counted, not dropped/.test(c)));
 });

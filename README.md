@@ -215,6 +215,14 @@ Three things it reports, and each exists to stop a specific way of fooling yours
   valuable thing this can tell you.
 - **`pending`, not zero.** A horizon the price history does not reach yet reports the date
   it needs and no number. Horizons are 1m, 3m, 6m, 1y, 2y.
+- **Delisted names counted, not dropped.** A pick that goes bankrupt disappears from the
+  price feed, and silently excluding it removes the worst outcomes from the record — the
+  classic way a bad strategy reads as a good one. Bankruptcy and acquisition both end a
+  series and point opposite ways, and there is no corporate-action data here to separate
+  them, so both bounds are reported: `meanReturn` excludes them, `meanIfDelistedAreTotalLoss`
+  counts each as −100%. A wide gap between the two means the result turns on names that
+  stopped trading. A company still trading with no close near the horizon is a `gap` —
+  missing data, not an outcome — and one that never had a price at all is `unpriced`.
 
 `priceOn` only ever reads backwards from a target date, so grading cannot smuggle in the
 look-ahead the store exists to prevent — there is a test for exactly that. Every report

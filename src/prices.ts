@@ -15,7 +15,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CACHE_DIR, HTTP_TIMEOUT_MS, STOOQ_REQUESTS_PER_SECOND } from "./constants.ts";
-import { isoDate, observation, PRICE_METRIC, type ISODate, type Observation, type Ticker } from "./observation.ts";
+import { isoDate, observation, PRICE_METRIC, type ISODate, type Observation, type Entity, type Ticker } from "./observation.ts";
 import { rateLimiter } from "./pool.ts";
 
 export const STOOQ_BASE = "https://stooq.com/q/d/l/";
@@ -31,7 +31,7 @@ export interface PriceOptions {
 
 export interface PriceClient {
   /** Daily closes for one ticker, oldest first. Empty when Stooq has no series. */
-  closes(ticker: Ticker): Promise<Observation[]>;
+  closes(ticker: Ticker, entity: Entity): Promise<Observation[]>;
 }
 
 /**
@@ -40,7 +40,7 @@ export interface PriceClient {
  * `knownAt` is the close date itself: a closing price is knowable the day it prints,
  * which is what makes prices safe to mix with filings in a point-in-time slice.
  */
-export function parseStooqCsv(csv: string, ticker: Ticker): Observation[] {
+export function parseStooqCsv(csv: string, ticker: Ticker, entity: Entity): Observation[] {
   const lines = csv.trim().split(/\r?\n/);
   const header = lines[0]?.toLowerCase() ?? "";
   if (!header.startsWith("date")) return []; // Stooq answers "N/D" for unknown symbols
@@ -71,7 +71,7 @@ export function parseStooqCsv(csv: string, ticker: Ticker): Observation[] {
       observation({
         value: close,
         metric: PRICE_METRIC,
-        entity: ticker,
+        entity,
         validAt: date,
         knownAt: date,
         source: "stooq",
@@ -90,10 +90,10 @@ export function createPriceClient(options: PriceOptions = {}): PriceClient {
   const gate = options.gate ?? rateLimiter(STOOQ_REQUESTS_PER_SECOND);
 
   return {
-    async closes(ticker) {
+    async closes(ticker, entity) {
       const cachePath = join(cacheDir, `${ticker}.csv`);
       try {
-        return parseStooqCsv(await readFile(cachePath, "utf8"), ticker);
+        return parseStooqCsv(await readFile(cachePath, "utf8"), ticker, entity);
       } catch {
         // not cached yet
       }
@@ -103,7 +103,7 @@ export function createPriceClient(options: PriceOptions = {}): PriceClient {
       if (!response.ok) throw new Error(`Stooq ${response.status} for ${ticker}`);
 
       const csv = await response.text();
-      const rows = parseStooqCsv(csv, ticker);
+      const rows = parseStooqCsv(csv, ticker, entity);
       if (rows.length > 0) {
         await mkdir(cacheDir, { recursive: true });
         await writeFile(cachePath, csv);

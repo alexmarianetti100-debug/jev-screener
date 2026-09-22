@@ -11,7 +11,7 @@
 import { choice, score, type JsonValue, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk";
 import { CONTAMINATION_WINDOW_DAYS, QUESTION_SET_VERSION } from "./constants.ts";
 import type { DerivedMetric, MetricRow } from "./metrics.ts";
-import { daysBetween, todayISO, type ISODate, type Ticker } from "./observation.ts";
+import { daysBetween, todayISO, type Entity, type ISODate } from "./observation.ts";
 import type { Distribution, PeerContext } from "./peers.ts";
 
 export { QUESTION_SET_VERSION };
@@ -125,7 +125,7 @@ function wirePeers(peer: PeerContext): Record<string, JsonValue> {
 
 export function buildTriageState(row: MetricRow, peer: PeerContext): Record<string, JsonValue> {
   return {
-    company: { ticker: row.entity, sector: row.sector },
+    company: { ticker: row.label, sector: row.sector },
     asOf: row.asOf,
     note: "Fundamentals only. No price or valuation data is available at this stage.",
     metrics: wireMetrics(row),
@@ -147,7 +147,7 @@ export function buildJudgmentState(
   filing: FilingExcerpt | undefined,
 ): Record<string, JsonValue> {
   return {
-    company: { ticker: row.entity, sector: row.sector },
+    company: { ticker: row.label, sector: row.sector },
     asOf: row.asOf,
     metrics: wireMetrics(row),
     valuation: row.hasPrice ? "Multiples included in metrics above." : "No price data available; multiples are absent.",
@@ -182,7 +182,9 @@ export function askJudgment(
 // ── Assembly ──────────────────────────────────────────────────────────────────
 
 export interface Judged {
-  readonly entity: Ticker;
+  readonly entity: Entity;
+  /** The symbol to show a human. A filer with no ticker shows as its CIK. */
+  readonly label: string;
   readonly sector: string;
   readonly result: JudgmentResult;
   readonly fromCache: boolean;
@@ -190,7 +192,8 @@ export interface Judged {
 }
 
 export interface Pick {
-  readonly entity: Ticker;
+  readonly entity: Entity;
+  readonly label: string;
   readonly sector: string;
   readonly verdict: JudgmentResult["answers"]["verdict"];
   readonly attractiveness: JudgmentResult["answers"]["attractiveness"];
@@ -217,6 +220,7 @@ export function assemble(judged: readonly Judged[]): Pick[] {
     .sort((a, b) => b.result.answers.attractiveness.score - a.result.answers.attractiveness.score)
     .map((j) => ({
       entity: j.entity,
+      label: j.label,
       sector: j.sector,
       verdict: j.result.answers.verdict,
       attractiveness: j.result.answers.attractiveness,

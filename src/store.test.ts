@@ -3,8 +3,8 @@ import test from "node:test";
 import { cik, isoDate, observation, ticker, type Observation } from "./observation.ts";
 import { lockError, openStore, type Store } from "./store.ts";
 
-const ACME = ticker("ACME");
-const BETA = ticker("BETA");
+const ACME = cik("320193");
+const BETA = cik("789019");
 
 const row = (
   entity: typeof ACME, metric: string, validAt: string, knownAt: string, value: number,
@@ -85,7 +85,7 @@ test("slices can be narrowed by metric and entity without changing the rules", a
 test("filers round-trip, including their filing list", async () => {
   await withStore(async (store) => {
     await store.saveFilers([{
-      entity: ACME, cik: cik(1234), name: "Acme Corp", sic: "3571", sector: "manufacturing",
+      entity: ACME, cik: cik(1234), tickers: [ticker("ACME")], name: "Acme Corp", sic: "3571", sector: "manufacturing",
       filings: [{ form: "10-K", filedAt: isoDate("2026-02-15"), accession: "a", primaryDocument: "k.htm" }],
     }]);
 

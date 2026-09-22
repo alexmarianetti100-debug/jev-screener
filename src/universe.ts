@@ -12,7 +12,7 @@
  */
 
 import { MAX_ANNUAL_REPORT_AGE_MONTHS, MIN_REVENUE_QUARTERS } from "./constants.ts";
-import { addMonths, type CIK, type ISODate, type ObservationSlice, type Ticker } from "./observation.ts";
+import { addMonths, type CIK, type Entity, type ISODate, type ObservationSlice, type Ticker } from "./observation.ts";
 
 /** A filing as recorded in EDGAR's submissions index. */
 export interface FilingRef {
@@ -24,8 +24,14 @@ export interface FilingRef {
 
 /** What the submissions index tells us about a filer. */
 export interface FilerProfile {
-  readonly entity: Ticker;
+  /** The CIK. Keyed here, not on a ticker — see `Entity` in observation.ts. */
+  readonly entity: Entity;
   readonly cik: CIK;
+  /**
+   * Every ticker SEC lists for this filer, primary first. Often empty: a filer can
+   * be a large operating company and still appear in no ticker file at all.
+   */
+  readonly tickers: readonly Ticker[];
   readonly name: string;
   readonly sic: string;
   readonly sector: string;
@@ -43,7 +49,7 @@ const DOMESTIC_FORMS = new Set(["10-K", "10-K/A", "10-Q", "10-Q/A"]);
 const NON_OPERATING_FORMS = new Set(["20-F", "40-F", "N-CSR", "N-CSRS", "N-Q", "N-1A", "485BPOS", "24F-2NT"]);
 
 export interface EligibilityVerdict {
-  readonly entity: Ticker;
+  readonly entity: Entity;
   readonly eligible: boolean;
   /** Which predicates failed, for `coverage_status`. Empty when eligible. */
   readonly missing: readonly string[];
@@ -171,3 +177,53 @@ export function sectorForSic(sic: string): string {
   if (code < 9000) return "services";
   return "public administration";
 }
+
+/** What a set of user-supplied symbols resolved to. */
+export interface TickerResolution {
+  readonly entities: readonly Entity[];
+  /** Symbols matching no filer in the universe. */
+  readonly unknown: readonly Ticker[];
+  /** Symbols claimed by more than one filer. Surfaced, never silently picked. */
+  readonly ambiguous: readonly { readonly ticker: Ticker; readonly entities: readonly Entity[] }[];
+}
+
+/**
+ * Resolve display symbols to the CIKs they name.
+ *
+ * Ambiguity is reported rather than resolved. Quietly choosing one of two filers that
+ * claim a symbol is how a screener ends up confidently describing the wrong company,
+ * which is worse than describing none.
+ */
+export function resolveTickers(
+  profiles: readonly FilerProfile[],
+  wanted: readonly Ticker[],
+): TickerResolution {
+  const index = new Map<Ticker, Entity[]>();
+  for (const profile of profiles) {
+    for (const symbol of profile.tickers) {
+      const entities = index.get(symbol);
+      if (entities) entities.push(profile.entity);
+      else index.set(symbol, [profile.entity]);
+    }
+  }
+
+  const entities: Entity[] = [];
+  const unknown: Ticker[] = [];
+  const ambiguous: { ticker: Ticker; entities: readonly Entity[] }[] = [];
+
+  for (const symbol of wanted) {
+    const matches = index.get(symbol);
+    if (!matches || matches.length === 0) {
+      unknown.push(symbol);
+      continue;
+    }
+    if (matches.length > 1) ambiguous.push({ ticker: symbol, entities: [...matches] });
+    for (const entity of matches) if (!entities.includes(entity)) entities.push(entity);
+  }
+
+  return { entities, unknown, ambiguous };
+}
+
+/** The symbol to show for a filer. Filers with no ticker are shown by CIK. */
+export const displayLabel = (profile: FilerProfile): string =>
+  profile.tickers[0] ?? `CIK${profile.entity}`;

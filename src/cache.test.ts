@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cacheKeyFor, memoryCache, rowVintage, serializeKey, throughCache, vintageOf } from "./cache.ts";
 import type { MetricRow } from "./metrics.ts";
-import { isoDate, observation, ticker, type ISODate, type Observation } from "./observation.ts";
+import { cik,isoDate, observation, ticker, type ISODate, type Observation } from "./observation.ts";
 
-const ACME = ticker("ACME");
+const ACME = cik("320193");
 
 const obs = (knownAt: string, metric = "revenue"): Observation =>
   observation({
@@ -14,7 +14,7 @@ const obs = (knownAt: string, metric = "revenue"): Observation =>
   });
 
 const rowWith = (...knownAts: string[]): MetricRow => ({
-  entity: ACME, sector: "retail", asOf: isoDate("2026-09-01"),
+  entity: ACME, label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
   metrics: {}, inputs: knownAts.map((k) => obs(k)), hasPrice: false,
 });
 
@@ -25,7 +25,7 @@ test("vintage is the newest knownAt across all inputs", () => {
 
 test("a row with no inputs falls back to the slice date", () => {
   const empty: MetricRow = {
-    entity: ACME, sector: "retail", asOf: isoDate("2026-09-01"),
+    entity: ACME, label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
     metrics: {}, inputs: [], hasPrice: false,
   };
   assert.equal(rowVintage(empty), "2026-09-01");

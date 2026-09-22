@@ -13,12 +13,12 @@
  */
 
 import type { MetricRow } from "./metrics.ts";
-import type { ISODate, Observation, Ticker } from "./observation.ts";
+import type { Entity, ISODate, Observation } from "./observation.ts";
 
 export type Stage = "triage" | "judgment";
 
 export interface CacheKey {
-  readonly entity: Ticker;
+  readonly entity: Entity;
   readonly questionSetVersion: string;
   /** The newest `knownAt` across every input that fed the judgment. */
   readonly maxKnownAt: ISODate;

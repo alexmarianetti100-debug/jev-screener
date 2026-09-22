@@ -124,7 +124,8 @@ export function createMcpServer(store: Store): Server {
             cache: report.cache,
             usage: report.usage,
             picks: report.picks.map((pick) => ({
-              ticker: pick.entity,
+              ticker: pick.label,
+              cik: pick.entity,
               sector: pick.sector,
               attractiveness: pick.attractiveness,
               verdict: pick.verdict,
@@ -143,7 +144,7 @@ export function createMcpServer(store: Store): Server {
         case "explain_pick": {
           const ticker = args["ticker"];
           if (typeof ticker !== "string" || ticker.trim() === "") return failure("explain_pick requires a `ticker`.");
-          return json(await explainPick({ store, entity: ticker.trim().toUpperCase() as Ticker, asOf: readAsOf(args) }));
+          return json(await explainPick({ store, ticker: ticker.trim().toUpperCase() as Ticker, asOf: readAsOf(args) }));
         }
 
         case "coverage_status":

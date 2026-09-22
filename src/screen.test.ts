@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CONTAMINATION_WINDOW_DAYS } from "./constants.ts";
 import type { DerivedMetric } from "./metrics.ts";
-import { isoDate, ticker, type Ticker } from "./observation.ts";
+import { cik,isoDate, ticker, type Ticker } from "./observation.ts";
 import {
   ContaminatedRunError, assemble, assertRunnable, buildTriageState,
   judgmentQuestionSet, triageQuestionSet, type Judged, type JudgmentResult,
@@ -28,7 +28,8 @@ function judged(
   };
 
   return {
-    entity: ticker(symbol),
+    entity: cik([...symbol].map((c) => c.charCodeAt(0)).join("")),
+    label: symbol,
     sector: "manufacturing",
     fromCache: false,
     metrics: {} as Partial<Record<DerivedMetric, number>>,
@@ -36,7 +37,7 @@ function judged(
   };
 }
 
-const symbols = (picks: readonly { entity: Ticker }[]): string[] => picks.map((p) => String(p.entity));
+const symbols = (picks: readonly { label: string }[]): string[] => picks.map((p) => p.label);
 
 test("inclusion is read off verdict.choice, not off a probability", () => {
   const picks = assemble([
@@ -117,7 +118,7 @@ test("the flag lets it run, and stamps every result as contaminated", () => {
 test("triage state carries no price, and says so", () => {
   const state = buildTriageState(
     {
-      entity: ticker("ACME"), sector: "retail", asOf: isoDate("2026-09-01"),
+      entity: cik("320193"), label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
       metrics: {}, inputs: [], hasPrice: false,
     },
     {

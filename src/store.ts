@@ -19,7 +19,7 @@ import type { CacheEntry, CacheKey, CacheStats, JudgmentCache } from "./cache.ts
 import { DATA_DIR, DB_PATH } from "./constants.ts";
 import {
   buildSlice, isoDate, observation,
-  type ISODate, type Observation, type ObservationSlice, type Reliability, type Ticker,
+  type Entity, type ISODate, type Observation, type ObservationSlice, type Reliability, type Ticker,
 } from "./observation.ts";
 import type { FilerProfile } from "./universe.ts";
 
@@ -40,8 +40,9 @@ CREATE INDEX IF NOT EXISTS observations_scan ON observations (metric, known_at);
 CREATE INDEX IF NOT EXISTS observations_entity ON observations (entity, metric);
 
 CREATE TABLE IF NOT EXISTS filers (
-  entity     VARCHAR PRIMARY KEY,
+  entity     VARCHAR PRIMARY KEY,   -- the CIK
   cik        VARCHAR NOT NULL,
+  tickers    JSON    NOT NULL,      -- every symbol SEC lists, primary first, often none
   name       VARCHAR NOT NULL,
   sic        VARCHAR NOT NULL,
   sector     VARCHAR NOT NULL,
@@ -104,7 +105,7 @@ export interface Store {
    * The only read path. Loads every observation knowable by `asOf`, newest revision
    * of each period winning, and hands back an in-memory slice.
    */
-  sliceAsOf(asOf: ISODate, options?: { metrics?: readonly string[]; entities?: readonly Ticker[] }): Promise<ObservationSlice>;
+  sliceAsOf(asOf: ISODate, options?: { metrics?: readonly string[]; entities?: readonly Entity[] }): Promise<ObservationSlice>;
   observationCount(): Promise<number>;
   saveFilers(profiles: readonly FilerProfile[]): Promise<void>;
   loadFilers(): Promise<FilerProfile[]>;
@@ -257,7 +258,7 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
         const base = {
           value: asNumber(row["value"]),
           metric: asString(row["metric"]),
-          entity: asString(row["entity"]) as Ticker,
+          entity: asString(row["entity"]) as Entity,
           validAt: isoDate(asString(row["valid_at"])),
           knownAt: isoDate(asString(row["known_at"])),
           source: asString(row["source"]),
@@ -279,18 +280,20 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
     async saveFilers(profiles) {
       for (const profile of profiles) {
         await connection.run(
-          `INSERT OR REPLACE INTO filers (entity, cik, name, sic, sector, filings, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, current_timestamp)`,
-          [profile.entity, profile.cik, profile.name, profile.sic, profile.sector, JSON.stringify(profile.filings)],
+          `INSERT OR REPLACE INTO filers (entity, cik, tickers, name, sic, sector, filings, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, current_timestamp)`,
+          [profile.entity, profile.cik, JSON.stringify(profile.tickers), profile.name,
+           profile.sic, profile.sector, JSON.stringify(profile.filings)],
         );
       }
     },
 
     async loadFilers() {
-      const reader = await connection.runAndReadAll("SELECT entity, cik, name, sic, sector, filings FROM filers");
+      const reader = await connection.runAndReadAll("SELECT entity, cik, tickers, name, sic, sector, filings FROM filers");
       return reader.getRowObjectsJS().map((row) => ({
         entity: asString(row["entity"]) as FilerProfile["entity"],
         cik: asString(row["cik"]) as FilerProfile["cik"],
+        tickers: JSON.parse(asString(row["tickers"]) || "[]") as FilerProfile["tickers"],
         name: asString(row["name"]),
         sic: asString(row["sic"]),
         sector: asString(row["sector"]),

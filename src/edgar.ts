@@ -27,7 +27,7 @@ import {
 } from "./constants.ts";
 import {
   cik as toCik, isoDate, observation, ticker as toTicker,
-  type CIK, type ISODate, type Observation, type Ticker,
+  type CIK, type Entity, type ISODate, type Observation, type Ticker,
 } from "./observation.ts";
 import { rateLimiter } from "./pool.ts";
 import { sectorForSic, type FilerProfile, type FilingRef } from "./universe.ts";
@@ -300,6 +300,28 @@ export function cikFromEntryName(name: string): CIK | undefined {
   return match?.[1] ? toCik(match[1]) : undefined;
 }
 
+/**
+ * Every CIK an archive contains, read from the central directory alone.
+ *
+ * No member is decompressed. This is what defines the universe: a filer with XBRL
+ * financial data, knowable from ~20,000 filenames without parsing 1.31 GB of JSON.
+ * Deriving membership from the ticker file instead is what dropped Exxon.
+ */
+export async function zipEntryCiks(path: string): Promise<Set<CIK>> {
+  const handle = await openFile(path, "r");
+  try {
+    const found = new Set<CIK>();
+    for (const entry of await readZipDirectory(handle)) {
+      if (entry.uncompressedSize === 0) continue;
+      const entryCik = cikFromEntryName(entry.name);
+      if (entryCik) found.add(entryCik);
+    }
+    return found;
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Stream a ZIP's entries, parsing each as JSON. Skips entries that fail to parse. */
 export async function* iterateZipJson<T>(
   path: string,
@@ -326,16 +348,31 @@ export async function* iterateZipJson<T>(
 
 interface TickerRow { cik_str: number | string; ticker: string; title: string }
 
-/** CIK → ticker. A CIK with several tickers keeps the shortest, which is the common share. */
-export async function fetchTickerMap(client: EdgarClient): Promise<Map<CIK, Ticker>> {
+/**
+ * CIK → every ticker SEC lists for it, shortest first.
+ *
+ * Keeping only one was wrong: 1,448 filers carry more than one symbol (Alphabet has
+ * GOOGL, GOOG, GOOGM and GOOGN), and dropping the rest means a screen for a perfectly
+ * ordinary ticker silently returns nothing. Shortest first is a display convention —
+ * the common share is usually the shortest symbol — not a judgment about the company.
+ *
+ * This map only *attaches labels*. It must never decide who is in the universe: SEC's
+ * file omits filers entirely (Exxon Mobil Corp, CIK 34088, is absent) and points some
+ * familiar symbols at the wrong filer.
+ */
+export async function fetchTickerMap(client: EdgarClient): Promise<Map<CIK, Ticker[]>> {
   const raw = await client.getJson<Record<string, TickerRow>>(COMPANY_TICKERS);
-  const map = new Map<CIK, Ticker>();
+  const map = new Map<CIK, Ticker[]>();
   for (const row of Object.values(raw)) {
     if (!row?.ticker) continue;
     const key = toCik(row.cik_str);
     const candidate = toTicker(row.ticker);
     const existing = map.get(key);
-    if (!existing || candidate.length < existing.length) map.set(key, candidate);
+    if (!existing) map.set(key, [candidate]);
+    else if (!existing.includes(candidate)) existing.push(candidate);
+  }
+  for (const tickers of map.values()) {
+    tickers.sort((a, b) => a.length - b.length || a.localeCompare(b));
   }
   return map;
 }
@@ -413,35 +450,79 @@ interface PeriodFact {
   readonly tag: string;
 }
 
-function collectConcept(facts: CompanyFacts, concept: Concept): PeriodFact[] {
+/** Every entry recorded under one tag, across the namespaces we understand. */
+function entriesForTag(facts: CompanyFacts, concept: Concept, tag: string): PeriodFact[] {
   const namespaces = facts.facts ?? {};
   const out: PeriodFact[] = [];
 
-  for (const tag of TAG_CHAINS[concept]) {
-    for (const namespace of ["us-gaap", "dei", "ifrs-full"]) {
-      const units = namespaces[namespace]?.[tag]?.units;
-      if (!units) continue;
-      // USD for money, shares for counts; take whichever unit this concept uses.
-      const series = units["USD"] ?? units["shares"] ?? Object.values(units)[0];
-      if (!series) continue;
+  for (const namespace of ["us-gaap", "dei", "ifrs-full"]) {
+    const units = namespaces[namespace]?.[tag]?.units;
+    if (!units) continue;
+    // USD for money, shares for counts; take whichever unit this concept uses.
+    const series = units["USD"] ?? units["shares"] ?? Object.values(units)[0];
+    if (!series) continue;
 
-      for (const entry of series) {
-        if (typeof entry.val !== "number" || !entry.end || !entry.filed) continue;
-        out.push({
-          start: entry.start ?? entry.end,
-          end: isoDate(entry.end),
-          filed: isoDate(entry.filed),
-          value: MAGNITUDE_CONCEPTS.has(concept) ? Math.abs(entry.val) : entry.val,
-          form: entry.form ?? "",
-          accession: entry.accn ?? "",
-          tag,
-        });
-      }
-      // First tag in the chain that has data wins; do not mix tags for one concept.
-      if (out.length > 0) return out;
+    for (const entry of series) {
+      if (typeof entry.val !== "number" || !entry.end || !entry.filed) continue;
+      out.push({
+        start: entry.start ?? entry.end,
+        end: isoDate(entry.end),
+        filed: isoDate(entry.filed),
+        value: MAGNITUDE_CONCEPTS.has(concept) ? Math.abs(entry.val) : entry.val,
+        form: entry.form ?? "",
+        accession: entry.accn ?? "",
+        tag,
+      });
     }
   }
   return out;
+}
+
+/** Reduce a raw tag series to the periods this concept is actually measured over. */
+function normalisePeriods(concept: Concept, raw: readonly PeriodFact[]): PeriodFact[] {
+  return FLOW_CONCEPTS.has(concept)
+    ? quarterize(raw)
+    : raw.filter((entry) => dayCount(entry.start, entry.end) <= 1);
+}
+
+/** Reporting quarter of a date, so two series are compared by period, not by day. */
+const quarterKey = (date: string): string => `${date.slice(0, 4)}Q${Math.ceil(Number(date.slice(5, 7)) / 3)}`;
+
+const latestEnd = (periods: readonly PeriodFact[]): string =>
+  periods.reduce((newest, period) => (period.end > newest ? period.end : newest), periods[0]?.end ?? "");
+
+/**
+ * Pick the one tag that best describes this concept for this filer.
+ *
+ * Coverage decides, not position in the chain. A filer that adopted ASC 606 and then
+ * moved on can leave a seven-entry stub under the "modern" tag while its complete
+ * current series sits under `Revenues` — Lockheed is exactly this shape. Taking the
+ * first tag with any data at all picks the stub and the company then looks like it
+ * stopped reporting revenue in 2018.
+ *
+ * Recency is bucketed by reporting quarter so that a few days' difference in period
+ * end cannot outvote a hundred periods of history. Tags are never mixed: splicing
+ * ASC 605 and ASC 606 revenue would join two different definitions into one series.
+ * The winning tag is recorded on every observation, so the choice stays auditable.
+ */
+function collectConcept(facts: CompanyFacts, concept: Concept): PeriodFact[] {
+  const chain = TAG_CHAINS[concept] as readonly string[];
+  const candidates: { readonly index: number; readonly periods: PeriodFact[] }[] = [];
+
+  for (let index = 0; index < chain.length; index++) {
+    const tag = chain[index];
+    if (!tag) continue;
+    const periods = normalisePeriods(concept, entriesForTag(facts, concept, tag));
+    if (periods.length > 0) candidates.push({ index, periods });
+  }
+  if (candidates.length === 0) return [];
+
+  candidates.sort((a, b) =>
+    quarterKey(latestEnd(b.periods)).localeCompare(quarterKey(latestEnd(a.periods)))
+    || b.periods.length - a.periods.length
+    || a.index - b.index);
+
+  return candidates[0]?.periods ?? [];
 }
 
 /**
@@ -496,16 +577,13 @@ export function quarterize(entries: readonly PeriodFact[]): PeriodFact[] {
 }
 
 /** Turn one company's companyfacts document into observations. */
-export function factsToObservations(facts: CompanyFacts, entity: Ticker): Observation[] {
+export function factsToObservations(facts: CompanyFacts, entity: Entity): Observation[] {
   const rows: Observation[] = [];
 
   for (const concept of Object.keys(TAG_CHAINS) as Concept[]) {
-    const collected = collectConcept(facts, concept);
-    if (collected.length === 0) continue;
-
-    const periods = FLOW_CONCEPTS.has(concept)
-      ? quarterize(collected)
-      : collected.filter((entry) => dayCount(entry.start, entry.end) <= 1);
+    // Already normalised: collectConcept picks a tag and reduces it to periods.
+    const periods = collectConcept(facts, concept);
+    if (periods.length === 0) continue;
 
     for (const period of periods) {
       rows.push(
@@ -544,9 +622,19 @@ export interface Submissions {
   };
 }
 
-export function submissionsToProfile(submissions: Submissions, fallbackTicker?: Ticker): FilerProfile | undefined {
-  const entity = fallbackTicker ?? (submissions.tickers?.[0] ? toTicker(submissions.tickers[0]) : undefined);
-  if (!entity) return undefined;
+export function submissionsToProfile(submissions: Submissions, extraTickers: readonly Ticker[] = []): FilerProfile | undefined {
+  // The CIK is the key, so a filer with no ticker at all is still a filer.
+  let entity: Entity;
+  try {
+    entity = toCik(submissions.cik ?? "");
+  } catch {
+    return undefined;
+  }
+
+  const tickers = [...new Set([
+    ...(submissions.tickers ?? []).filter(Boolean).map(toTicker),
+    ...extraTickers,
+  ])].sort((a, b) => a.length - b.length || a.localeCompare(b));
 
   const recent = submissions.filings?.recent;
   const filings: FilingRef[] = [];
@@ -569,7 +657,8 @@ export function submissionsToProfile(submissions: Submissions, fallbackTicker?: 
 
   return {
     entity,
-    cik: toCik(submissions.cik ?? 0),
+    cik: entity,
+    tickers,
     name: submissions.name ?? String(entity),
     sic,
     sector: sectorForSic(sic),

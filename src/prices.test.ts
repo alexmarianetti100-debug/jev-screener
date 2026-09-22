@@ -3,10 +3,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ticker } from "./observation.ts";
+import { cik, ticker } from "./observation.ts";
 import { createPriceClient, parseStooqCsv, stooqUrl } from "./prices.ts";
 
 const ACME = ticker("ACME");
+const ACME_CIK = cik("320193");
 const noWait = async (): Promise<void> => {};
 
 const CSV = `Date,Open,High,Low,Close,Volume
@@ -19,7 +20,7 @@ test("Stooq's URL uses the lower-case .us suffix", () => {
 });
 
 test("a close is knowable on its own date", () => {
-  const rows = parseStooqCsv(CSV, ACME);
+  const rows = parseStooqCsv(CSV, ACME, ACME_CIK);
 
   assert.equal(rows.length, 3);
   const last = rows.at(-1)!;
@@ -32,13 +33,13 @@ test("a close is knowable on its own date", () => {
 });
 
 test("rows come back oldest first", () => {
-  const rows = parseStooqCsv(CSV, ACME);
+  const rows = parseStooqCsv(CSV, ACME, ACME_CIK);
   assert.deepEqual(rows.map((r) => r.validAt), ["2026-08-26", "2026-08-27", "2026-08-28"]);
 });
 
 test("Stooq's 'no data' answer yields no rows rather than an error", () => {
-  assert.deepEqual(parseStooqCsv("N/D", ACME), []);
-  assert.deepEqual(parseStooqCsv("", ACME), []);
+  assert.deepEqual(parseStooqCsv("N/D", ACME, ACME_CIK), []);
+  assert.deepEqual(parseStooqCsv("", ACME, ACME_CIK), []);
 });
 
 test("malformed and non-positive rows are skipped, not zero-filled", () => {
@@ -49,7 +50,7 @@ not-a-date,10,10,10,10.50,1
 2026-08-28,10,10,10,0,1
 2026-08-29,10,10,10,11.10,1`;
 
-  const rows = parseStooqCsv(messy, ACME);
+  const rows = parseStooqCsv(messy, ACME, ACME_CIK);
   assert.deepEqual(rows.map((r) => r.value), [10.4, 11.1]);
 });
 
@@ -57,7 +58,7 @@ test("column order is read from the header, not assumed", () => {
   const reordered = `Date,Close,Open,High,Low,Volume
 2026-08-26,42.50,10,10,10,1`;
 
-  assert.equal(parseStooqCsv(reordered, ACME)[0]?.value, 42.5);
+  assert.equal(parseStooqCsv(reordered, ACME, ACME_CIK)[0]?.value, 42.5);
 });
 
 test("a fetched series is cached, and the second call does not hit the network", async () => {
@@ -72,8 +73,8 @@ test("a fetched series is cached, and the second call does not hit the network",
     },
   });
 
-  const first = await client.closes(ACME);
-  const second = await client.closes(ACME);
+  const first = await client.closes(ACME, ACME_CIK);
+  const second = await client.closes(ACME, ACME_CIK);
 
   assert.equal(calls, 1);
   assert.equal(first.length, 3);
@@ -92,8 +93,8 @@ test("an empty series is not cached, so a later run can retry", async () => {
     },
   });
 
-  assert.deepEqual(await client.closes(ACME), []);
-  assert.equal((await client.closes(ACME)).length, 3);
+  assert.deepEqual(await client.closes(ACME, ACME_CIK), []);
+  assert.equal((await client.closes(ACME, ACME_CIK)).length, 3);
   assert.equal(calls, 2);
 });
 
@@ -104,5 +105,5 @@ test("a non-2xx response is an error rather than a silent gap", async () => {
     fetch: async () => new Response("rate limited", { status: 429 }),
   });
 
-  await assert.rejects(() => client.closes(ACME), /Stooq 429/);
+  await assert.rejects(() => client.closes(ACME, ACME_CIK), /Stooq 429/);
 });

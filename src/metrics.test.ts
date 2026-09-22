@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { computeMetrics } from "./metrics.ts";
-import { buildSlice, isoDate, observation, ticker, type Observation } from "./observation.ts";
+import { cik,buildSlice, isoDate, observation, ticker, type Observation } from "./observation.ts";
 
-const ACME = ticker("ACME");
+const ACME = cik("320193");
 const ASOF = isoDate("2026-09-01");
 
 /** Eight quarter-ends, oldest first, all filed 30 days after the period closed. */
@@ -51,7 +51,7 @@ function baseline(): Observation[] {
   ];
 }
 
-const compute = (rows: Observation[]) => computeMetrics(buildSlice(rows, ASOF), ACME, "manufacturing");
+const compute = (rows: Observation[]) => computeMetrics(buildSlice(rows, ASOF), ACME, "manufacturing", "ACME");
 
 test("TTM growth compares the last four quarters with the four before", () => {
   const row = compute(baseline());

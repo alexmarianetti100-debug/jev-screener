@@ -67,7 +67,8 @@ jev is the one that decides what to do about them.
 ## How it runs
 
 1. **Ingest** — two bulk ZIPs from EDGAR (`companyfacts.zip`, `submissions.zip`) cover the entire
-   universe in two requests. Exploded into one observation per (metric, period, filing),
+   universe in two requests. Membership comes from the facts archive, not the ticker
+   file. Exploded into one observation per (metric, period, filing),
    append-only. Then the daily index keeps it current.
 2. **Eligibility** — derives the universe by the predicates above. No hand-written ticker list.
 3. **Slice** — bind an `asOf` reader; read latest-known values.
@@ -104,17 +105,53 @@ whose price has moved sharply carries a stale valuation until its next filing.
 A fully cached run touches neither Stooq nor EDGAR and needs no API key at all, which is what
 makes `screen_run` cheap enough to call from a conversation.
 
+## Identity: the CIK, never the ticker
+
+Observations are keyed on the CIK. Tickers are display labels held in a separate list,
+and three facts from the live archive are why:
+
+- **SEC's ticker file omits companies.** Exxon Mobil Corp, CIK 34088, is not in
+  `company_tickers.json` at all. Deriving the universe from that file dropped one of
+  the largest filers in the country. Membership now comes from `companyfacts.zip`'s own
+  central directory — every filer with XBRL data — read from ~20,000 filenames without
+  decompressing a byte. A filer with no ticker is still a filer, shown as `CIK…`.
+- **It points familiar symbols at the wrong filer.** `XOM` maps to CIK 2115436,
+  "ExxonMobil Holdings Corp", which has two revenue quarters and no 10-K. It is now
+  ineligible and cannot be judged, but the mapping is SEC's and we report it faithfully
+  rather than inventing a correction. `resolveTickers` surfaces a contested symbol as
+  ambiguous and never silently picks one — quietly choosing between two filers that
+  claim a symbol is how a screener ends up confidently describing the wrong company.
+- **One filer carries several symbols.** 1,448 of them do; Alphabet has GOOGL, GOOG,
+  GOOGM and GOOGN. Keeping only one meant a screen for an ordinary ticker returned
+  nothing.
+
+## Tag selection: coverage, not chain position
+
+Each concept has an ordered chain of XBRL tags, but the chain no longer picks the
+winner. Every tag is evaluated, normalised to periods, and the one with the most
+current series wins — recency bucketed by reporting quarter, then period count, with
+chain order only as a tie-break.
+
+Taking the first tag with *any* data looked reasonable and was badly wrong. Lockheed
+adopted ASC 606, tagged seven periods under `RevenueFromContractWithCustomerExcludingAssessedTax`
+around the transition, then reported under `Revenues` ever after. The old rule picked
+the seven-entry stub, so Lockheed appeared to have stopped reporting revenue in 2018,
+failed the 12-quarter eligibility test, and vanished from the universe. Its capex was
+broken the same way, stopping in 2013. Tags are still never mixed — splicing ASC 605
+and ASC 606 revenue would join two different definitions — and the winning tag is
+recorded on every observation, so the choice stays auditable.
+
 ## Observed behaviour on real data
 
 Measured on a live ingest, 2026-09-21:
 
 | | |
 | --- | --- |
-| Filers with a ticker | 8,046 |
-| Observations ingested | 3,112,272 |
-| Database size | 905 MB (+ 2.8 GB of cached archives) |
-| **Eligible universe** | **3,305** |
-| Biggest eligibility failures | too few revenue quarters (4,616), no 10-K (2,814), no operating cash flow (2,799), foreign issuer or fund (1,768) |
+| Filers with XBRL data | 20,390 |
+| Observations ingested | 5,864,257 |
+| Database size | 1.9 GB (+ 2.8 GB of cached archives) |
+| **Eligible universe** | **3,962** |
+| Biggest eligibility failures | too few revenue quarters (12,674), 10-K older than 18 months (8,949), no operating cash flow (6,170), no 10-K on file (5,477), foreign issuer or fund (4,156) |
 | Slice + eligibility pass | ~10 s |
 | Triage | 3,098 input tokens/company, ~$0.00013 each |
 | Judgment | 9,824 input tokens/company, ~$0.00041 each |

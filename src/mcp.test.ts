@@ -14,7 +14,7 @@ import { createClient } from "./client.ts";
 import { runIngest, runScreen } from "./cli.ts";
 import type { EdgarClient } from "./edgar.ts";
 import { createMcpServer } from "./mcp.ts";
-import { isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
+import { cik, type Entity, isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
 import type { PriceClient } from "./prices.ts";
 import { openStore, type Store } from "./store.ts";
 
@@ -141,9 +141,9 @@ async function stubEdgar(): Promise<EdgarClient> {
 }
 
 const stubPrices = (): PriceClient => ({
-  async closes(symbol: Ticker): Promise<Observation[]> {
+  async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
     return [{
-      value: 50, metric: "close", entity: symbol,
+      value: 50, metric: "close", entity,
       validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
       source: "stooq", reliability: "market",
     }];
@@ -288,7 +288,8 @@ test("explain_pick exposes provenance for every number", async () => {
   try {
     const result = parse(await client.callTool({ name: "explain_pick", arguments: { ticker: "acme" } }));
 
-    assert.equal(result["entity"], "ACME");
+    assert.equal(result["ticker"], "ACME");
+    assert.equal(result["entity"], "0000000001", "resolved to the filer's CIK");
     assert.equal(result["eligible"], true);
 
     const observations = result["observations"] as Record<string, unknown>[];

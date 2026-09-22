@@ -21,13 +21,13 @@ import {
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
-  cikFromEntryName, fetchFilingText, fetchTickerMap, iterateZipJson, submissionsToProfile,
+  cikFromEntryName, fetchFilingText, fetchTickerMap, iterateZipJson, submissionsToProfile, zipEntryCiks,
   type CompanyFacts, type EdgarClient, type Submissions,
 } from "./edgar.ts";
 import { computeMetrics, type DerivedMetric, type MetricRow } from "./metrics.ts";
 import {
   cik as toCik, isoDate, todayISO, PRICE_METRIC,
-  type CIK, type ISODate, type Observation, type Ticker,
+  type CIK, type Entity, type ISODate, type Observation, type Ticker,
 } from "./observation.ts";
 import { buildPeerTables, overlayDistributions, peerContextFor, type PeerTables } from "./peers.ts";
 import { createPriceClient, type PriceClient } from "./prices.ts";
@@ -37,7 +37,7 @@ import {
   type FilingExcerpt, type Judged, type JudgmentResult, type Pick, type RunStamp, type TriageResult,
 } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
-import { buildUniverse, latestFiling, type FilerProfile } from "./universe.ts";
+import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
 
 /** Metrics that exist only once a price has been fetched. */
 const PRICE_METRICS: readonly DerivedMetric[] = ["priceToEarnings", "evToEbit"];
@@ -73,33 +73,47 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
 
   log("fetching ticker map…");
   const tickerMap = await fetchTickerMap(edgar);
-  log(`  ${tickerMap.size} tickers`);
+  log(`  ${tickerMap.size} filers carry a ticker`);
+
+  log("downloading companyfacts.zip (bulk)…");
+  const factsPath = await edgar.download(COMPANY_FACTS_ZIP, cacheName(COMPANY_FACTS_ZIP));
+  await options.store.recordFetch("edgar", "companyfacts", true, factsPath);
+
+  // The universe is every filer with XBRL data, read from the archive's own
+  // directory. It is deliberately NOT derived from the ticker file: that file omits
+  // filers outright — Exxon Mobil Corp, CIK 34088, is not in it — and points some
+  // familiar symbols at the wrong company. Tickers are labels we attach afterwards.
+  const universe = await zipEntryCiks(factsPath);
+  log(`  ${universe.size} filers with XBRL data`);
+
+  const isWanted = (name: string): boolean => {
+    const entryCik = cikFromEntryName(name);
+    return entryCik !== undefined && universe.has(entryCik);
+  };
 
   log("downloading submissions.zip (bulk)…");
   const submissionsPath = await edgar.download(SUBMISSIONS_ZIP, cacheName(SUBMISSIONS_ZIP));
   await options.store.recordFetch("edgar", "submissions", true, submissionsPath);
 
-  // Only filers with a ticker can be screened, and we already know which those are.
-  const wantedCiks = new Set(tickerMap.keys());
-  const isWanted = (name: string): boolean => {
-    const cik = cikFromEntryName(name);
-    return cik !== undefined && wantedCiks.has(cik);
+  const safeCik = (raw: unknown): CIK | undefined => {
+    try {
+      return toCik(String(raw ?? ""));
+    } catch {
+      return undefined;
+    }
   };
 
   const profiles: FilerProfile[] = [];
   for await (const { data } of iterateZipJson<Submissions>(submissionsPath, isWanted)) {
-    const key = toCik(data.cik ?? 0);
-    const profile = submissionsToProfile(data, tickerMap.get(key));
+    const key = safeCik(data.cik);
+    const profile = submissionsToProfile(data, key ? tickerMap.get(key) ?? [] : []);
     if (profile) profiles.push(profile);
   }
   await options.store.saveFilers(profiles);
-  log(`  ${profiles.length} filers with a ticker`);
+  const withTicker = profiles.filter((profile) => profile.tickers.length > 0).length;
+  log(`  ${profiles.length} filers (${withTicker} with a ticker)`);
 
   const byCik = new Map<CIK, FilerProfile>(profiles.map((p) => [p.cik, p]));
-
-  log("downloading companyfacts.zip (bulk)…");
-  const factsPath = await edgar.download(COMPANY_FACTS_ZIP, cacheName(COMPANY_FACTS_ZIP));
-  await options.store.recordFetch("edgar", "companyfacts", true, factsPath);
 
   let observations = 0;
   let skipped = 0;
@@ -108,7 +122,7 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   for await (const { data } of iterateZipJson<CompanyFacts>(factsPath, isWanted)) {
     const profile = byCik.get(toCik(data.cik ?? 0));
     if (!profile) {
-      skipped++; // no ticker: not something we can screen
+      skipped++; // XBRL data but no submissions record: nothing to describe it
       continue;
     }
     batch.push(...factsToObservations(data, profile.entity));
@@ -128,7 +142,9 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const slice = await options.store.sliceAsOf(asOf);
     const universe = buildUniverse(profiles, slice, asOf);
     log(`refreshing prices for ${universe.eligible.length} eligible companies…`);
-    priceObservations = (await ingestPrices(options.store, prices, universe.eligible.map((v) => v.entity), log)).stored;
+    const profileOf = new Map(profiles.map((profile) => [profile.entity, profile]));
+    const targets = priceTargets(universe.eligible.map((v) => v.entity), profileOf);
+    priceObservations = (await ingestPrices(options.store, prices, targets, log)).stored;
   }
 
   return { filers: profiles.length, observations, priceObservations, skipped };
@@ -149,10 +165,25 @@ export interface PriceIngestReport {
  * constraint, so concurrency would buy nothing. The circuit breaker is what keeps a
  * dead source from turning that into a 25-minute stall.
  */
+export interface PriceTarget {
+  readonly entity: Entity;
+  readonly ticker: Ticker;
+}
+
+/** Filers we can actually price: Stooq is addressed by symbol, so no symbol, no price. */
+export const priceTargets = (
+  entities: readonly Entity[],
+  profileOf: ReadonlyMap<Entity, FilerProfile>,
+): PriceTarget[] =>
+  entities.flatMap((entity) => {
+    const ticker = profileOf.get(entity)?.tickers[0];
+    return ticker ? [{ entity, ticker }] : [];
+  });
+
 export async function ingestPrices(
   store: Store,
   prices: PriceClient,
-  tickers: readonly Ticker[],
+  targets: readonly PriceTarget[],
   log: (message: string) => void,
 ): Promise<PriceIngestReport> {
   let stored = 0;
@@ -160,10 +191,10 @@ export async function ingestPrices(
   let failed = 0;
   let consecutiveFailures = 0;
 
-  for (const ticker of tickers) {
+  for (const { entity, ticker } of targets) {
     attempted++;
     try {
-      const rows = await prices.closes(ticker);
+      const rows = await prices.closes(ticker, entity);
       stored += await store.appendObservations(rows);
       await store.recordFetch("stooq", "prices", true, ticker);
       consecutiveFailures = 0;
@@ -175,7 +206,7 @@ export async function ingestPrices(
       if (consecutiveFailures >= PRICE_SOURCE_FAILURE_LIMIT) {
         log(
           `  price source unreachable after ${consecutiveFailures} consecutive failures ` +
-            `(${attempted} of ${tickers.length} attempted) — continuing without multiples`,
+            `(${attempted} of ${targets.length} attempted) — continuing without multiples`,
         );
         return { stored, attempted, failed, abandoned: true };
       }
@@ -246,13 +277,22 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
 
   const sectorOf = new Map(profiles.map((p) => [p.entity, p.sector]));
   const profileOf = new Map(profiles.map((p) => [p.entity, p]));
+  const labelOf = (entity: Entity): string => {
+    const profile = profileOf.get(entity);
+    return profile ? displayLabel(profile) : `CIK${entity}`;
+  };
 
   // Peer context over the ENTIRE eligible universe — the yardstick every call shares.
-  const allRows = universe.eligible.map((v) => computeMetrics(slice, v.entity, sectorOf.get(v.entity) ?? "unknown"));
+  const allRows = universe.eligible.map((v) => computeMetrics(slice, v.entity, sectorOf.get(v.entity) ?? "unknown", labelOf(v.entity)));
   const peerTables = buildPeerTables(allRows, asOf);
 
   // Narrowing applies to what we judge, never to the yardstick.
-  const wanted = options.tickers?.length ? new Set(options.tickers) : undefined;
+  const resolution = options.tickers?.length ? resolveTickers(profiles, options.tickers) : undefined;
+  for (const symbol of resolution?.unknown ?? []) log(`  no filer in the universe carries ${symbol}`);
+  for (const clash of resolution?.ambiguous ?? []) {
+    log(`  ${clash.ticker} is claimed by ${clash.entities.length} filers — judging all of them`);
+  }
+  const wanted = resolution ? new Set<Entity>(resolution.entities) : undefined;
   const candidates = allRows.filter(
     (row) => (!wanted || wanted.has(row.entity)) && (!options.sector || row.sector === options.sector),
   );
@@ -302,7 +342,7 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
 
   let pricedRows = survivorRows;
   let judgmentPeers: PeerTables = peerTables;
-  const filings = new Map<Ticker, FilingExcerpt>();
+  const filings = new Map<Entity, FilingExcerpt>();
 
   if (stale.length > 0) {
     // Prices are fetched for EVERY survivor, not just the stale ones. The multiples
@@ -311,7 +351,8 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     // batch, which is the one thing the peer context exists to prevent.
     const survivors = survivorRows.map((row) => row.entity);
     log(`fetching prices for ${survivors.length} survivors…`);
-    const priceReport = await ingestPrices(store, options.prices ?? createPriceClient(), survivors, log);
+    const priceReport = await ingestPrices(
+      store, options.prices ?? createPriceClient(), priceTargets(survivors, profileOf), log);
     if (priceReport.abandoned) {
       failures.push(
         `price source gave up after ${priceReport.failed} failures; ` +
@@ -320,7 +361,7 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     }
 
     const pricedSlice = await store.sliceAsOf(asOf, { entities: survivors });
-    pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector));
+    pricedRows = survivorRows.map((row) => computeMetrics(pricedSlice, row.entity, row.sector, row.label));
     judgmentPeers = overlayDistributions(peerTables, pricedRows, PRICE_METRICS);
 
     // Filing text, on the other hand, is only worth fetching for what we will ask
@@ -395,7 +436,7 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
       if (value) metrics[metric as DerivedMetric] = value.value;
     }
     judged.push({
-      entity: row.entity, sector: row.sector, result,
+      entity: row.entity, label: row.label, sector: row.sector, result,
       fromCache: !stale.includes(index), metrics,
     });
   }
@@ -432,7 +473,10 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
 // ── Explain ───────────────────────────────────────────────────────────────────
 
 export interface ExplainReport {
-  readonly entity: Ticker;
+  /** The symbol asked about. Present even when nothing carries it. */
+  readonly ticker: Ticker;
+  /** The filer it resolved to, absent when no filer in the universe carries it. */
+  readonly entity?: Entity;
   readonly asOf: ISODate;
   readonly sector: string;
   readonly eligible: boolean;
@@ -458,19 +502,29 @@ export interface ExplainReport {
 /** Everything behind one company's result, including where each number came from. */
 export async function explainPick(options: {
   store: Store;
-  entity: Ticker;
+  ticker: Ticker;
   asOf?: ISODate;
 }): Promise<ExplainReport> {
   const asOf = options.asOf ?? todayISO();
   const profiles = await options.store.loadFilers();
-  const profile = profiles.find((p) => p.entity === options.entity);
-  const slice = await options.store.sliceAsOf(asOf, { entities: [options.entity] });
+
+  const resolution = resolveTickers(profiles, [options.ticker]);
+  const entity = resolution.entities[0];
+  if (!entity) {
+    return {
+      ticker: options.ticker, asOf, sector: "unknown", eligible: false,
+      missing: ["filer not in store"], observations: [], metrics: {}, judgments: [],
+    };
+  }
+
+  const profile = profiles.find((p) => p.entity === entity);
+  const slice = await options.store.sliceAsOf(asOf, { entities: [entity] });
 
   const sector = profile?.sector ?? "unknown";
-  const row = computeMetrics(slice, options.entity, sector);
+  const row = computeMetrics(slice, entity, sector, profile ? displayLabel(profile) : options.ticker);
   const eligibility = profile
     ? buildUniverse([profile], slice, asOf)
-    : { eligible: [], ineligible: [{ entity: options.entity, eligible: false, missing: ["filer not in store"] }] };
+    : { eligible: [], ineligible: [{ entity, eligible: false, missing: ["filer not in store"] }] };
 
   const metrics: Partial<Record<DerivedMetric, { value: number; knownAt: ISODate; from: string }>> = {};
   for (const [metric, observation] of Object.entries(row.metrics)) {
@@ -488,7 +542,8 @@ export async function explainPick(options: {
 
   const verdict = eligibility.eligible[0] ?? eligibility.ineligible[0];
   return {
-    entity: options.entity,
+    ticker: options.ticker,
+    entity,
     asOf,
     sector,
     eligible: verdict?.eligible ?? false,
@@ -603,7 +658,7 @@ async function main(): Promise<void> {
     if (subcommand === "explain") {
       const raw = flags.get("ticker");
       if (!raw) throw new Error("explain needs --ticker=SYMBOL");
-      console.log(JSON.stringify(await explainPick({ store, entity: raw.toUpperCase() as Ticker, asOf }), null, 2));
+      console.log(JSON.stringify(await explainPick({ store, ticker: raw.toUpperCase() as Ticker, asOf }), null, 2));
       return;
     }
 
@@ -633,7 +688,7 @@ function printScreen(report: ScreenReport): void {
   for (const [index, pick] of report.picks.entries()) {
     const { attractiveness, verdict, answers } = pick;
     console.log(
-      `  ${String(index + 1).padStart(3)}. ${pick.entity.padEnd(6)} ${attractiveness.score.toFixed(2)}  ` +
+      `  ${String(index + 1).padStart(3)}. ${pick.label.padEnd(6)} ${attractiveness.score.toFixed(2)}  ` +
         `${pick.sector}${pick.fromCache ? "  (cached)" : ""}`,
     );
     console.log(

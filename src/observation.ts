@@ -22,6 +22,16 @@ export type Ticker = Brand<string, "Ticker">;
 /** Ten digits, zero-padded, as EDGAR expects. */
 export type CIK = Brand<string, "CIK">;
 
+/**
+ * What an observation is keyed on.
+ *
+ * The CIK, never the ticker. Tickers are display labels: they get reassigned, a
+ * company can carry four of them at once, and SEC's own ticker file can point a
+ * familiar symbol at the wrong filer. A store keyed on tickers silently inherits
+ * every one of those problems. Tickers live in their own lookup table.
+ */
+export type Entity = CIK;
+
 export const usd = (n: number): USD => n as USD;
 export const shares = (n: number): Shares => n as Shares;
 export const ratio = (n: number): Ratio => n as Ratio;
@@ -70,7 +80,7 @@ export interface Observation<T = number> {
   readonly value: T;
   /** Canonical metric id, e.g. `revenue` or `grossMargin`. */
   readonly metric: string;
-  readonly entity: Ticker;
+  readonly entity: Entity;
   /** The period the number describes — the fiscal period end, or the price date. */
   readonly validAt: ISODate;
   /** When it first became knowable. EDGAR's `filed`; for prices, the close date. */
@@ -145,11 +155,11 @@ export function derive(
 export interface ObservationSlice {
   readonly asOf: ISODate;
   /** Latest period whose value was knowable by `asOf`, newest revision winning. */
-  latest(entity: Ticker, metric: string): Observation | undefined;
+  latest(entity: Entity, metric: string): Observation | undefined;
   /** Every period knowable by `asOf`, oldest first, one row per period. */
-  series(entity: Ticker, metric: string): readonly Observation[];
-  entities(): readonly Ticker[];
-  has(entity: Ticker): boolean;
+  series(entity: Entity, metric: string): readonly Observation[];
+  entities(): readonly Entity[];
+  has(entity: Entity): boolean;
 }
 
 const SEP = "\u0000";
@@ -162,7 +172,7 @@ const SEP = "\u0000";
  * implementation of the rule that matters most.
  */
 export function buildSlice(rows: readonly Observation[], asOf: ISODate): ObservationSlice {
-  const byEntity = new Map<Ticker, Map<string, Map<ISODate, Observation>>>();
+  const byEntity = new Map<Entity, Map<string, Map<ISODate, Observation>>>();
 
   for (const row of rows) {
     if (row.knownAt > asOf) continue; // not yet knowable
@@ -177,7 +187,7 @@ export function buildSlice(rows: readonly Observation[], asOf: ISODate): Observa
   }
 
   const sorted = new Map<string, readonly Observation[]>();
-  const seriesFor = (entity: Ticker, metric: string): readonly Observation[] => {
+  const seriesFor = (entity: Entity, metric: string): readonly Observation[] => {
     const key = entity + SEP + metric;
     const cached = sorted.get(key);
     if (cached) return cached;

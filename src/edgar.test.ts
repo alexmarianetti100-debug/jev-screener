@@ -10,7 +10,7 @@ import {
 } from "./edgar.ts";
 import { cik, isoDate, ticker } from "./observation.ts";
 
-const ACME = ticker("ACME");
+const ACME = cik("320193");
 const noWait = async (): Promise<void> => {};
 
 /** Build a real ZIP (stored, no compression) so the reader is exercised, not mocked. */
@@ -79,7 +79,7 @@ test("the bulk ZIP path parses a real archive", async () => {
   assert.deepEqual(seen.sort(), ["One", "Two"]);
 });
 
-test("the ticker map zero-pads CIKs and prefers the common share", async () => {
+test("the ticker map zero-pads CIKs and keeps every symbol", async () => {
   const client = createEdgarClient({
     userAgent: "test", gate: noWait,
     fetch: async (url) => {
@@ -93,8 +93,10 @@ test("the ticker map zero-pads CIKs and prefers the common share", async () => {
   });
 
   const map = await fetchTickerMap(client);
-  assert.equal(map.get(cik(320193)), "AAPL");
-  assert.equal(map.get(cik(1045810)), "NVDA");
+  assert.deepEqual(map.get(cik(320193)), ["AAPL"]);
+  // Every symbol is kept, shortest first: dropping the rest meant a screen for a
+  // perfectly ordinary ticker returned nothing for 1,448 filers.
+  assert.deepEqual(map.get(cik(1045810)), ["NVDA", "NVDA.WS"]);
 });
 
 test("a non-2xx response from EDGAR is an error, not an empty result", async () => {
@@ -240,14 +242,25 @@ test("submissions become a profile with filings newest first", () => {
 
   const profile = submissionsToProfile(submissions);
   assert.ok(profile);
-  assert.equal(profile.entity, "ACME");
+  // Keyed on the CIK; the symbol is an attached label.
+  assert.equal(profile.entity, "0000001234");
   assert.equal(profile.cik, "0000001234");
+  assert.deepEqual(profile.tickers, ["ACME"]);
   assert.equal(profile.sector, "manufacturing");
   assert.equal(profile.filings[0]?.filedAt, "2026-07-20");
 });
 
-test("a filer with no ticker is not screenable", () => {
-  assert.equal(submissionsToProfile({ cik: 1, name: "Private Co" }), undefined);
+test("a filer with no ticker is still a filer", () => {
+  // SEC's ticker file omits companies outright — Exxon Mobil Corp, CIK 34088, is not
+  // in it. Requiring a ticker to exist dropped those filers from the universe
+  // entirely, so the CIK is what makes a filer, and symbols are attached afterwards.
+  const profile = submissionsToProfile({ cik: 34088, name: "Exxon Mobil Corp" });
+  assert.equal(profile?.entity, cik(34088));
+  assert.deepEqual(profile?.tickers, []);
+});
+
+test("a filer with no CIK cannot be keyed, and is skipped", () => {
+  assert.equal(submissionsToProfile({ name: "Nameless" }), undefined);
 });
 
 // ── Filing text ───────────────────────────────────────────────────────────────
@@ -362,4 +375,53 @@ test("a cached archive is reused without re-reading it into memory", async () =>
   await client.download("https://www.sec.gov/x/bulk.zip", "bulk.zip");
   await client.download("https://www.sec.gov/x/bulk.zip", "bulk.zip");
   assert.equal(fetches, 1);
+});
+
+test("a fragmentary modern tag does not beat a complete current one", () => {
+  // Lockheed's real shape: it adopted ASC 606, tagged seven periods under the modern
+  // concept around the transition, then reported under `Revenues` ever after. Taking
+  // the first tag in the chain with any data made the company look like it stopped
+  // reporting revenue in 2018.
+  const quarters = (startYear: number, endYear: number): unknown[] => {
+    const out: unknown[] = [];
+    for (let year = startYear; year <= endYear; year++) {
+      for (const [start, end] of [["-01-01", "-03-31"], ["-04-01", "-06-30"], ["-07-01", "-09-30"]]) {
+        out.push({
+          start: `${year}${start}`, end: `${year}${end}`, val: 1_000,
+          filed: `${year}-11-01`, form: "10-Q", accn: `${year}${start}`,
+        });
+      }
+    }
+    return out;
+  };
+
+  const lockheedShaped: CompanyFacts = {
+    facts: {
+      "us-gaap": {
+        RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: quarters(2017, 2018) as never } },
+        Revenues: { units: { USD: quarters(2019, 2026) as never } },
+      },
+    },
+  };
+
+  const rows = factsToObservations(lockheedShaped, ACME).filter((row) => row.metric === "revenue");
+  const latest = rows.map((row) => row.validAt).sort().at(-1);
+
+  assert.equal(rows[0]?.tag, "Revenues", "the complete current series must win");
+  assert.ok(latest && latest > "2026-01-01", `revenue should run to 2026, got ${latest}`);
+  assert.ok(rows.length >= 12, `expected a full history, got ${rows.length} quarters`);
+});
+
+test("chain order still decides when two tags are equally current", () => {
+  const same = [{ start: "2026-01-01", end: "2026-03-31", val: 5, filed: "2026-05-01", form: "10-Q", accn: "a" }];
+  const both: CompanyFacts = {
+    facts: {
+      "us-gaap": {
+        RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: same as never } },
+        Revenues: { units: { USD: same as never } },
+      },
+    },
+  };
+  const rows = factsToObservations(both, ACME).filter((row) => row.metric === "revenue");
+  assert.equal(rows[0]?.tag, "RevenueFromContractWithCustomerExcludingAssessedTax");
 });

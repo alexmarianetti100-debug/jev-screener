@@ -11,7 +11,7 @@ import test from "node:test";
 import { createClient } from "./client.ts";
 import { coverageStatus, explainPick, ingestPrices, runIngest, runScreen } from "./cli.ts";
 import type { EdgarClient } from "./edgar.ts";
-import { isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
+import { cik, type Entity, isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
 import type { PriceClient } from "./prices.ts";
 import { ContaminatedRunError } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
@@ -196,10 +196,10 @@ const stubPrices = (): PriceClient & { calls: Ticker[] } => {
   const calls: Ticker[] = [];
   return {
     calls,
-    async closes(symbol: Ticker): Promise<Observation[]> {
+    async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
       calls.push(symbol);
       return [{
-        value: 50, metric: "close", entity: symbol,
+        value: 50, metric: "close", entity,
         validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
         source: "stooq", reliability: "market",
       }];
@@ -270,7 +270,7 @@ test("ingest reads the bulk ZIPs and reports what it stored", async () => {
     assert.equal(report.skipped, 0);
 
     const filers = await store.loadFilers();
-    assert.deepEqual(filers.map((f) => f.entity).sort(), ["DROP", "GOOD", "MEH"]);
+    assert.deepEqual(filers.flatMap((f) => f.tickers).sort(), ["DROP", "GOOD", "MEH"]);
     assert.equal(filers[0]?.sector, "manufacturing");
   } finally {
     await store.close();
@@ -290,7 +290,7 @@ test("the full pipeline runs, and jev's verdict alone decides the picks", async 
     assert.equal(report.judged, 2);
 
     // MEH was judged `watch`, so it is not a pick despite surviving triage.
-    assert.deepEqual(report.picks.map((p) => String(p.entity)), ["GOOD"]);
+    assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"]);
     assert.equal(report.picks[0]?.attractiveness.score, 4.5);
     assert.equal(report.stamp.contaminated, false);
 
@@ -359,7 +359,7 @@ test("a second run with no new filings is served from cache", async () => {
     assert.equal(second.calls.length, 0, "no jev call was made on the second run");
     assert.deepEqual(secondPrices.calls, [], "no price was fetched on the second run");
     assert.equal(report.usage.inputTokens, 0, "a cached run costs no tokens");
-    assert.deepEqual(report.picks.map((p) => String(p.entity)), ["GOOD"], "same answer from cache");
+    assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"], "same answer from cache");
     assert.ok(report.cache.hits >= 5);
   } finally {
     await store.close();
@@ -433,7 +433,7 @@ test("explain_pick shows every number's source, tag and knownAt", async () => {
   const { store, edgar } = await seeded();
   try {
     await runScreen({ store, edgar, prices: stubPrices(), client: stubJev().client });
-    const explained = await explainPick({ store, entity: ticker("GOOD") });
+    const explained = await explainPick({ store, ticker: ticker("GOOD") });
 
     assert.equal(explained.eligible, true);
     assert.ok(explained.observations.length > 50);
@@ -495,7 +495,7 @@ test("a dead price source is abandoned, and the screen still produces picks", as
     // Only three survivors here, so the breaker's limit is never reached — what
     // matters is that a failing source does not stop the pipeline.
     assert.ok(attempts > 0, "prices were attempted");
-    assert.deepEqual(report.picks.map((p) => String(p.entity)), ["GOOD"]);
+    assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"]);
     assert.equal(report.judged, 2, "judgment ran without any price data");
   } finally {
     await store.close();
@@ -516,7 +516,7 @@ test("the breaker stops asking a source that keeps failing", async () => {
       },
     };
 
-    const report = await ingestPrices(store, dead, tickers, () => {});
+    const report = await ingestPrices(store, dead, tickers.map((t) => ({ entity: cik(String(t.length)), ticker: t })), () => {});
 
     assert.equal(report.abandoned, true);
     assert.equal(report.stored, 0);
@@ -535,18 +535,18 @@ test("an intermittent source is not abandoned — the run is about consecutive f
 
     let n = 0;
     const flaky: PriceClient = {
-      async closes(symbol: Ticker): Promise<Observation[]> {
+      async closes(symbol: Ticker, entity: Entity): Promise<Observation[]> {
         // Fails most of the time, but never `LIMIT` times in a row.
         if (++n % PRICE_SOURCE_FAILURE_LIMIT !== 0) throw new Error("transient");
         return [{
-          value: 10, metric: "close", entity: symbol,
+          value: 10, metric: "close", entity,
           validAt: isoDate(LATEST_FILED), knownAt: isoDate(LATEST_FILED),
           source: "stooq", reliability: "market",
         }];
       },
     };
 
-    const report = await ingestPrices(store, flaky, tickers, () => {});
+    const report = await ingestPrices(store, flaky, tickers.map((t) => ({ entity: cik(String(t.length)), ticker: t })), () => {});
 
     assert.equal(report.abandoned, false, "a flaky source is still worth finishing");
     assert.equal(report.attempted, tickers.length);

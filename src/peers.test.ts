@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { derive, isoDate, observation, ticker, type Observation } from "./observation.ts";
+import { cik,derive, isoDate, observation, ticker, type Observation } from "./observation.ts";
 import type { DerivedMetric, MetricRow } from "./metrics.ts";
 import { buildPeerTables, distributionsOver, overlayDistributions, peerContextFor } from "./peers.ts";
 
 const ASOF = isoDate("2026-09-01");
 
 function row(symbol: string, sector: string, metrics: Partial<Record<DerivedMetric, number>>): MetricRow {
-  const entity = ticker(symbol);
+  const entity = cik(String(symbol.length * 1000 + symbol.charCodeAt(0)));
   const seed = observation({
     value: 1, metric: "revenue", entity,
     validAt: ASOF, knownAt: ASOF, source: "test", reliability: "reported",
@@ -17,7 +17,7 @@ function row(symbol: string, sector: string, metrics: Partial<Record<DerivedMetr
   for (const [metric, value] of Object.entries(metrics)) {
     built[metric as DerivedMetric] = derive(value as number, metric, [seed]);
   }
-  return { entity, sector, asOf: ASOF, metrics: built, inputs: [seed], hasPrice: false };
+  return { entity, label: symbol, sector, asOf: ASOF, metrics: built, inputs: [seed], hasPrice: false };
 }
 
 test("quartiles interpolate across the values present", () => {

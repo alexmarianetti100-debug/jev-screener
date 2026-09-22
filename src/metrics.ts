@@ -10,7 +10,7 @@
  * Stock metrics (assets, cash, share count) are instants and are read directly.
  */
 
-import { derive, type ISODate, type Observation, type ObservationSlice, type Ticker, PRICE_METRIC } from "./observation.ts";
+import { derive, type ISODate, type Observation, type ObservationSlice, type Entity, PRICE_METRIC } from "./observation.ts";
 
 /** Metric ids produced by this module, in display order. */
 export const DERIVED_METRICS = [
@@ -26,7 +26,9 @@ export type DerivedMetric = (typeof DERIVED_METRICS)[number];
 
 /** One company's computed picture at a point in time. Absent metrics stay absent. */
 export interface MetricRow {
-  readonly entity: Ticker;
+  readonly entity: Entity;
+  /** The symbol a human — and jev — should see. Never the CIK, unless there is none. */
+  readonly label: string;
   readonly sector: string;
   readonly asOf: ISODate;
   readonly metrics: Readonly<Partial<Record<DerivedMetric, Observation>>>;
@@ -97,7 +99,7 @@ function cagr(latest: number, earliest: number, years: number): number | undefin
  * absent and decides what to make of it; filling a gap with a default here would be
  * a judgment wearing arithmetic's clothes.
  */
-export function computeMetrics(slice: ObservationSlice, entity: Ticker, sector: string): MetricRow {
+export function computeMetrics(slice: ObservationSlice, entity: Entity, sector: string, label: string): MetricRow {
   const metrics: Partial<Record<DerivedMetric, Observation>> = {};
   const inputs: Observation[] = [];
 
@@ -251,5 +253,5 @@ export function computeMetrics(slice: ObservationSlice, entity: Ticker, sector: 
     }
   }
 
-  return { entity, sector, asOf: slice.asOf, metrics, inputs, hasPrice };
+  return { entity, label, sector, asOf: slice.asOf, metrics, inputs, hasPrice };
 }

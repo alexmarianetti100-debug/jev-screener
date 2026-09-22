@@ -5,7 +5,7 @@ import {
   type Observation,
 } from "./observation.ts";
 
-const ACME = ticker("acme");
+const ACME = cik("320193");
 
 const row = (metric: string, validAt: string, knownAt: string, value: number, extra: Partial<Observation> = {}): Observation =>
   observation({
@@ -92,7 +92,7 @@ test("derived figures are no more reliable than their weakest input", () => {
 
 test("deriving across two companies is a bug, not a silent merge", () => {
   const other = observation({
-    value: 1, metric: "revenue", entity: ticker("OTHER"),
+    value: 1, metric: "revenue", entity: cik("789019"),
     validAt: isoDate("2026-03-31"), knownAt: isoDate("2026-05-01"),
     source: "test", reliability: "audited",
   });

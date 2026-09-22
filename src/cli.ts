@@ -42,6 +42,9 @@ import {
   askProbe, buildSlate, redact, summariseProbe,
   type ProbeOutcome, type ProbeReport,
 } from "./probe.ts";
+import {
+  perturb, perturbedCount, summariseTwins, type TwinOutcome, type TwinsReport,
+} from "./twins.ts";
 import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
 
 /** Metrics that exist only once a price has been fetched. */
@@ -711,6 +714,87 @@ export function horizonLabel(band: number): string {
 }
 
 /**
+ * Judge each company three times — real, again, and with the numbers worsened — to
+ * see whether the verdict follows the evidence or the name.
+ */
+export async function runTwins(options: {
+  store: Store;
+  sample?: number;
+  edgar?: EdgarClient;
+  client?: TypeSafeClient;
+  log?: (message: string) => void;
+}): Promise<TwinsReport> {
+  const log = options.log ?? (() => {});
+  const asOf = todayISO();
+  const store = options.store;
+
+  const profiles = await store.loadFilers();
+  const slice = await store.sliceAsOf(asOf);
+  const universe = buildUniverse(profiles, slice, asOf);
+  const profileOf = new Map(profiles.map((p) => [p.entity, p]));
+
+  const allRows = universe.eligible.flatMap((v) => {
+    const profile = profileOf.get(v.entity);
+    return profile ? [computeMetrics(slice, v.entity, profile.sector, displayLabel(profile))] : [];
+  });
+  const peerTables = buildPeerTables(allRows, asOf);
+
+  // Only companies jev would actually pick matter here: a verdict that was already
+  // `exclude` cannot flip further, so perturbing one measures nothing.
+  const last = await store.latestRun();
+  const included = new Set(
+    ((last?.payload as { picks?: { entity: string }[] } | undefined)?.picks ?? []).map((p) => String(p.entity)));
+  const candidates = allRows.filter((row) => included.has(String(row.entity)));
+
+  const wanted = options.sample ?? 40;
+  const step = Math.max(1, Math.floor(candidates.length / wanted));
+  const sample = candidates.filter((_, i) => i % step === 0).slice(0, wanted);
+  log(`judging ${sample.length} included companies three ways…`);
+
+  const edgar = options.edgar ?? createEdgarClient({ log });
+  const jev = options.client ?? createClient();
+  const outcomes: TwinOutcome[] = [];
+  let metricsChanged = 0;
+
+  for (const [index, row] of sample.entries()) {
+    const profile = profileOf.get(row.entity);
+    if (!profile) continue;
+
+    let filing: FilingExcerpt | undefined;
+    const ref = latestFiling(profile, ["10-K", "10-K/A", "10-Q"], asOf);
+    if (ref) {
+      try {
+        filing = await fetchFilingText(edgar, profile.cik, ref);
+      } catch {
+        filing = undefined;
+      }
+    }
+
+    const worse = perturb(row);
+    metricsChanged += perturbedCount(row, worse);
+    const peer = peerContextFor(peerTables, row.sector);
+
+    for (const [condition, state] of [["real", row], ["repeat", row], ["perturbed", worse]] as const) {
+      try {
+        const result = await askJudgment(jev, state, peer, filing);
+        const a = result.answers;
+        outcomes.push({
+          entity: String(row.entity), label: row.label, condition,
+          verdict: a.verdict.choice, attractiveness: a.attractiveness.score,
+          durability: a.durability.score, accountingQuality: a.accountingQuality.choice,
+          managementCandor: a.managementCandor.choice,
+        });
+      } catch (error) {
+        log(`  ${row.label} (${condition}) failed: ${(error as Error).message}`);
+      }
+    }
+    if ((index + 1) % 10 === 0) log(`  ${index + 1}/${sample.length}`);
+  }
+
+  return summariseTwins(outcomes, metricsChanged);
+}
+
+/**
  * Measure whether jev can recognise the companies it is shown.
  *
  * Sampled across the revenue range rather than off the top, because recognition is
@@ -878,6 +962,12 @@ async function main(): Promise<void> {
         : `\ningested ${report.observations} observations for ${report.filers} filers` +
           (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
           `\n${report.skipped} companyfacts entries skipped (no submissions record)\n`);
+      return;
+    }
+
+    if (subcommand === "twins") {
+      const sample = Number(flags.get("sample") ?? "40");
+      console.log(JSON.stringify(await runTwins({ store, sample, log: (m) => console.log(m) }), null, 2));
       return;
     }
 

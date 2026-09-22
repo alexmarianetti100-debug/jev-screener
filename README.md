@@ -234,6 +234,38 @@ Expect `pending` on every horizon for months. That is the honest answer, and hav
 measurement written before the data arrives is the point — it cannot then be shaped to
 fit whatever showed up.
 
+## Does it read the evidence, or the name?
+
+`npm run screen -- probe` found jev identifies about **85%** of these companies from their
+filing text, through redaction — against 25% chance on a four-way slate of same-sector,
+nearest-revenue decoys. From metrics alone it identified **none**, abstaining on all 60.
+Prose is the fingerprint; numbers are not.
+
+Recognition is not reliance, though, and the gap between them is the whole question.
+`npm run screen -- twins` judges each included company three times: the real filing, the
+identical filing again, and the same prose with the numbers rewritten into those of a
+deteriorating, more expensive business.
+
+On 40 companies:
+
+| | |
+| --- | --- |
+| Noise floor (two identical asks) | **0.04** attractiveness, **0** verdict flips |
+| Perturbed | **−2.38** attractiveness, **40 of 40** verdicts flipped |
+| Flipped to `exclude` | 38 |
+| Turned `accounting: questionable` | 25 |
+| Durability change | −1.58 |
+
+A 64:1 signal-to-noise ratio, and every verdict moved. **jev reads the evidence.** The
+25 companies whose accounting turned questionable are the correct response rather than a
+confound: the perturbation makes an upbeat MD&A stop matching the accounts, and noticing
+that is the job.
+
+Two things this does *not* establish. It speaks to the **forward screen** only — in a
+historical run the company's name carries the outcome as well as the evidence, so
+recognition stops being incidental. And a deterministic noise floor means jev is
+reproducible on identical input, not that it is right.
+
 ## Four limitations, stated plainly
 
 **1. Prices are end-of-day, and a filer with no ticker has none.** Polygon's grouped endpoint

@@ -16,25 +16,6 @@ import type { Distribution, PeerContext } from "./peers.ts";
 
 export { QUESTION_SET_VERSION };
 
-// ── Stage 1: triage ───────────────────────────────────────────────────────────
-
-/**
- * One question, no filing text. That is the whole point of this stage: roughly 300
- * tokens per company instead of 15,000, so the full universe is affordable to look
- * at, and only what survives is worth reading properly.
- */
-export const triageQuestionSet = {
-  advance: choice(
-    "Given these fundamentals against the peer distribution, is this company worth reading the filings for?",
-    {
-      advance: "Something here justifies the cost of reading the annual report — quality, durability, an unusual pattern, or a discrepancy worth understanding.",
-      drop: "Nothing in these fundamentals warrants a closer look right now.",
-    },
-  ),
-} as const;
-
-export type TriageResult = SystemOneResult<typeof triageQuestionSet>;
-
 // ── Stage 2: judgment ─────────────────────────────────────────────────────────
 
 export const judgmentQuestionSet = {
@@ -123,16 +104,6 @@ function wirePeers(peer: PeerContext): Record<string, JsonValue> {
   };
 }
 
-export function buildTriageState(row: MetricRow, peer: PeerContext): Record<string, JsonValue> {
-  return {
-    company: { ticker: row.label, sector: row.sector },
-    asOf: row.asOf,
-    note: "Fundamentals only. No price or valuation data is available at this stage.",
-    metrics: wireMetrics(row),
-    peers: wirePeers(peer),
-  };
-}
-
 export interface FilingExcerpt {
   readonly form: string;
   readonly filedAt: ISODate;
@@ -160,14 +131,6 @@ export function buildJudgmentState(
 
 // ── The calls ─────────────────────────────────────────────────────────────────
 
-export function askTriage(
-  client: TypeSafeClient,
-  row: MetricRow,
-  peer: PeerContext,
-  options: { signal?: AbortSignal } = {},
-): Promise<TriageResult> {
-  return client.systemOne({ state: buildTriageState(row, peer), questions: triageQuestionSet }, options);
-}
 
 export function askJudgment(
   client: TypeSafeClient,

@@ -21,7 +21,7 @@ import {
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
-  cikFromEntryName, fetchFilingText, fetchTickerMap, iterateZipJson, submissionsToProfile, zipEntryCiks,
+  TAG_CHAINS, cikFromEntryName, fetchFilingText, fetchTickerMap, iterateZipJson, submissionsToProfile, zipEntryCiks,
   type CompanyFacts, type EdgarClient, type Submissions,
 } from "./edgar.ts";
 import { computeMetrics, type DerivedMetric, type MetricRow } from "./metrics.ts";
@@ -33,8 +33,8 @@ import { buildPeerTables, overlayDistributions, peerContextFor, type PeerTables 
 import { createPriceClient, type PriceClient } from "./prices.ts";
 import { runPool } from "./pool.ts";
 import {
-  askJudgment, askTriage, assemble, assertRunnable,
-  type FilingExcerpt, type Judged, type JudgmentResult, type Pick, type RunStamp, type TriageResult,
+  askJudgment, assemble, assertRunnable,
+  type FilingExcerpt, type Judged, type JudgmentResult, type Pick, type RunStamp,
 } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
 import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
@@ -238,8 +238,6 @@ export interface ScreenReport {
   readonly questionSetVersion: string;
   readonly considered: number;
   readonly eligible: number;
-  readonly triaged: number;
-  readonly advanced: number;
   readonly judged: number;
   readonly picks: readonly Pick[];
   readonly cache: { readonly hits: number; readonly misses: number; readonly writes: number };
@@ -248,7 +246,7 @@ export interface ScreenReport {
 }
 
 /**
- * The full pipeline: eligibility, metrics, peers, triage, judgment, assembly.
+ * The full pipeline: eligibility, metrics, peers, judgment, assembly.
  *
  * `tickers` and `sector` narrow *which companies are judged*. They never narrow the
  * peer distributions, which are always computed over the whole eligible universe —
@@ -296,42 +294,19 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
   const candidates = allRows.filter(
     (row) => (!wanted || wanted.has(row.entity)) && (!options.sector || row.sector === options.sector),
   );
-  log(`triaging ${candidates.length} companies…`);
+  log(`judging ${candidates.length} companies…`);
 
   let inputTokens = 0;
   let outputTokens = 0;
   const failures: string[] = [];
 
-  // ── Stage 1: triage, no filing text ──
-  const triage = await runPool(
-    candidates,
-    async (row) => {
-      const key = cacheKeyFor(row, QUESTION_SET_VERSION, "triage");
-      const peer = peerContextFor(peerTables, row.sector);
-      const result = await throughCache<TriageResult>(store.cache, key, async () => {
-        const fresh = await askTriage(jev(), row, peer, options.signal ? { signal: options.signal } : {});
-        return { value: fresh, model: fresh.model, inputTokens: fresh.usage.input_tokens, outputTokens: fresh.usage.output_tokens };
-      });
-      inputTokens += result.inputTokens;
-      outputTokens += result.outputTokens;
-      return { row, result: result.value, fromCache: result.fromCache };
-    },
-    { size: JEV_POOL_SIZE, ...(options.signal ? { signal: options.signal } : {}) },
-  );
-  for (const failure of triage.failures) {
-    failures.push(`triage ${candidates[failure.index]?.entity}: ${(failure.error as Error).message}`);
-  }
-
-  const advanced = triage.results.filter((r) => r !== undefined && r.result.answers.advance.choice === "advance");
-  log(`  ${advanced.length} advanced to judgment`);
-
-  // ── Stage 2: judgment ──
+  // ── Judgment ──
   //
   // The cache is consulted BEFORE any fetching. Judgment cache keys are built from
   // filing vintage alone (see `vintageOf`), so they can be computed without prices —
   // which means a fully cached run touches neither Stooq nor EDGAR, and needs no API
   // key. That is what makes `screen_run` cheap enough to call from a conversation.
-  const survivorRows = advanced.map((a) => a!.row);
+  const survivorRows = candidates;
   const judgmentKeys = survivorRows.map((row) => cacheKeyFor(row, QUESTION_SET_VERSION, "judgment"));
 
   const cached: (JudgmentResult | undefined)[] = [];
@@ -448,8 +423,6 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     questionSetVersion: QUESTION_SET_VERSION,
     considered: universe.considered,
     eligible: universe.eligible.length,
-    triaged: candidates.length,
-    advanced: advanced.length,
     judged: judged.length,
     picks: options.limit === undefined ? picks : picks.slice(0, options.limit),
     cache: store.cache.stats(),
@@ -534,7 +507,7 @@ export async function explainPick(options: {
   }
 
   const judgments: { stage: string; fromCache: boolean; answers: unknown; model?: string }[] = [];
-  for (const stage of ["triage", "judgment"] as const) {
+  for (const stage of ["judgment"] as const) {
     const key = cacheKeyFor(row, QUESTION_SET_VERSION, stage);
     const hit = await options.store.cache.get(key);
     if (hit) judgments.push({ stage, fromCache: true, answers: hit.value, model: hit.model });
@@ -573,13 +546,50 @@ export interface CoverageReport {
   readonly lastRun?: { readonly runId: string; readonly asOf: ISODate; readonly contaminated: boolean };
   readonly cache: { readonly hits: number; readonly misses: number; readonly writes: number };
   readonly questionSetVersion: string;
+  /**
+   * Eligible filers carrying the least data, thinnest first, and eligible filers SEC
+   * lists no symbol for.
+   *
+   * This is the report that would have caught XOM. SEC's ticker file points that
+   * symbol at a filer with seventeen observations; it failed eligibility on its own,
+   * but nothing would have flagged it had it carried a little more history, and a
+   * screener that confidently describes the wrong company is worse than one that
+   * describes none. Counting observations is a statement about our inputs, never
+   * about the business, so it belongs here rather than in a jev question.
+   */
+  readonly thinnestEligible: readonly {
+    readonly entity: string;
+    readonly label: string;
+    readonly name: string;
+    readonly observations: number;
+  }[];
+  readonly eligibleWithoutTicker: number;
 }
+
+/** The concepts we ingest, so "how much data is there" is a fixed, comparable count. */
+const REPORTED_CONCEPTS = Object.keys(TAG_CHAINS);
 
 export async function coverageStatus(store: Store, asOf: ISODate = todayISO()): Promise<CoverageReport> {
   const profiles = await store.loadFilers();
   const slice = await store.sliceAsOf(asOf);
   const universe = buildUniverse(profiles, slice, asOf);
   const last = await store.latestRun();
+
+  const profileOf = new Map(profiles.map((profile) => [profile.entity, profile]));
+  const eligibleProfiles = universe.eligible.flatMap((verdict) => {
+    const profile = profileOf.get(verdict.entity);
+    return profile ? [profile] : [];
+  });
+
+  const thinnestEligible = eligibleProfiles
+    .map((profile) => ({
+      entity: String(profile.entity),
+      label: displayLabel(profile),
+      name: profile.name,
+      observations: REPORTED_CONCEPTS.reduce((total, metric) => total + slice.series(profile.entity, metric).length, 0),
+    }))
+    .sort((a, b) => a.observations - b.observations || a.label.localeCompare(b.label))
+    .slice(0, 10);
 
   return {
     asOf,
@@ -593,6 +603,8 @@ export async function coverageStatus(store: Store, asOf: ISODate = todayISO()): 
     ...(last ? { lastRun: { runId: last.runId, asOf: last.asOf, contaminated: last.contaminated } } : {}),
     cache: store.cache.stats(),
     questionSetVersion: QUESTION_SET_VERSION,
+    thinnestEligible,
+    eligibleWithoutTicker: eligibleProfiles.filter((profile) => profile.tickers.length === 0).length,
   };
 }
 
@@ -700,8 +712,7 @@ function printScreen(report: ScreenReport): void {
   }
 
   console.log(
-    `\n  ${report.eligible} eligible of ${report.considered} filers · ${report.triaged} triaged · ` +
-      `${report.advanced} advanced · ${report.judged} judged`,
+    `\n  ${report.eligible} eligible of ${report.considered} filers · ${report.judged} judged`,
   );
   console.log(
     `  cache ${report.cache.hits} hits / ${report.cache.misses} misses · ` +

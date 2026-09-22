@@ -176,3 +176,20 @@ test("a filer with no symbol is shown by CIK rather than hidden", () => {
   assert.equal(displayLabel(unlisted), "CIK0000034088");
   assert.equal(displayLabel(profile()), "ACME");
 });
+
+test("healthcare is not scattered across three SIC divisions", () => {
+  // UnitedHealth (6324) was being peer-compared against banks and REITs, and a
+  // biotech (2836) against steel mills. Both make the yardstick meaningless.
+  assert.equal(sectorForSic("6324"), "healthcare", "hospital and medical service plans");
+  assert.equal(sectorForSic("6321"), "healthcare", "accident and health insurance");
+  assert.equal(sectorForSic("2834"), "healthcare", "pharmaceutical preparations");
+  assert.equal(sectorForSic("2836"), "healthcare", "biological products");
+  assert.equal(sectorForSic("3845"), "healthcare", "electromedical apparatus");
+  assert.equal(sectorForSic("8060"), "healthcare", "hospitals");
+
+  // The neighbours those ranges were carved out of are untouched.
+  assert.equal(sectorForSic("6022"), "finance & real estate", "a state bank is still finance");
+  assert.equal(sectorForSic("2840"), "manufacturing", "soap is still manufacturing");
+  assert.equal(sectorForSic("3861"), "manufacturing", "photographic equipment is still manufacturing");
+  assert.equal(sectorForSic("8200"), "services", "schools are still services");
+});

@@ -207,7 +207,7 @@ const stubPrices = (): PriceClient & { calls: Ticker[] } => {
   };
 };
 
-/** jev stub: triage advances GOOD and MEH; judgment includes only GOOD. */
+/** jev stub: includes GOOD, watches MEH, excludes DROP. */
 function stubJev() {
   const calls: { stage: string; ticker: string }[] = [];
 
@@ -225,25 +225,24 @@ function stubJev() {
         questions: Record<string, unknown>;
       };
       const symbol = body.state.company.ticker;
-      const stage = "advance" in body.questions ? "triage" : "judgment";
+      const stage = "judgment";
       calls.push({ stage, ticker: symbol });
 
-      const answers = stage === "triage"
-        ? { advance: choice(symbol === "DROP" ? "drop" : "advance", { advance: 0.8, drop: 0.2 }) }
-        : {
-            verdict: choice(symbol === "GOOD" ? "include" : "watch", { include: 0.7, watch: 0.2, exclude: 0.1 }),
+      const verdictFor = symbol === "GOOD" ? "include" : symbol === "MEH" ? "watch" : "exclude";
+      const answers = {
+            verdict: choice(verdictFor, { include: 0.7, watch: 0.2, exclude: 0.1 }),
             attractiveness: score(symbol === "GOOD" ? 4.5 : 2.1),
             durability: score(3.2),
             accountingQuality: choice("clean", { clean: 0.8, questionable: 0.15, deteriorating: 0.05 }),
             dominantRisk: choice("demand", { demand: 0.5, margin: 0.2, balanceSheet: 0.1, regulatory: 0.1, none: 0.1 }),
             managementCandor: choice("direct", { direct: 0.6, guarded: 0.3, evasive: 0.1 }),
             sufficiency: choice("sufficient", { sufficient: 0.9, thin: 0.08, insufficient: 0.02 }),
-          };
+      };
 
       return Response.json({
         model: "typesafe/jev-1.13-test",
         answers,
-        usage: { input_tokens: stage === "triage" ? 300 : 15000, output_tokens: 20 },
+        usage: { input_tokens: 15000, output_tokens: 20 },
       });
     },
   });
@@ -285,50 +284,43 @@ test("the full pipeline runs, and jev's verdict alone decides the picks", async 
     const report = await runScreen({ store, edgar, prices, client: jev.client });
 
     assert.equal(report.eligible, 3);
-    assert.equal(report.triaged, 3);
-    assert.equal(report.advanced, 2, "DROP was dropped at triage");
-    assert.equal(report.judged, 2);
+    assert.equal(report.judged, 3, "every eligible company is judged — there is no pre-filter");
 
-    // MEH was judged `watch`, so it is not a pick despite surviving triage.
+    // MEH was judged `watch` and DROP `exclude`, so neither is a pick.
     assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"]);
     assert.equal(report.picks[0]?.attractiveness.score, 4.5);
     assert.equal(report.stamp.contaminated, false);
 
-    // Prices and filing text were fetched only for triage survivors.
-    assert.deepEqual([...prices.calls].sort(), ["GOOD", "MEH"]);
-    assert.equal(jev.calls.filter((c) => c.stage === "triage").length, 3);
-    assert.equal(jev.calls.filter((c) => c.stage === "judgment").length, 2);
-    assert.equal(jev.calls.some((c) => c.stage === "judgment" && c.ticker === "DROP"), false);
+    assert.deepEqual([...prices.calls].sort(), ["DROP", "GOOD", "MEH"]);
+    assert.equal(jev.calls.filter((c) => c.stage === "judgment").length, 3);
+    assert.equal(jev.calls.some((c) => c.ticker === "DROP"), true, "DROP is judged, then excluded by jev");
   } finally {
     await store.close();
   }
 });
 
-test("triage sees no price; judgment does", async () => {
+test("judgment sees the valuation multiples", async () => {
   const { store, edgar } = await seeded();
   try {
-    const states: { stage: string; hasMultiple: boolean }[] = [];
+    const states: { hasMultiple: boolean }[] = [];
     const client = createClient({
       apiKey: "test-key",
       retry: { maxRetries: 0 },
       fetch: async (_url, init) => {
-        const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown>; questions: Record<string, unknown> };
-        const stage = "advance" in body.questions ? "triage" : "judgment";
-        states.push({ stage, hasMultiple: JSON.stringify(body.state).includes("priceToEarnings") });
+        const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown> };
+        states.push({ hasMultiple: JSON.stringify(body.state).includes("priceToEarnings") });
 
         return Response.json({
           model: "test",
-          answers: stage === "triage"
-            ? { advance: { type: "choice", choice: "advance", confidence: 0.9, probabilities: { advance: 0.9, drop: 0.1 } } }
-            : {
-                verdict: { type: "choice", choice: "exclude", confidence: 0.9, probabilities: {} },
-                attractiveness: { type: "score", score: 1, confidence: 0.5, legend: {}, probabilities: {} },
-                durability: { type: "score", score: 1, confidence: 0.5, legend: {}, probabilities: {} },
-                accountingQuality: { type: "choice", choice: "clean", confidence: 0.5, probabilities: {} },
-                dominantRisk: { type: "choice", choice: "none", confidence: 0.5, probabilities: {} },
-                managementCandor: { type: "choice", choice: "direct", confidence: 0.5, probabilities: {} },
-                sufficiency: { type: "choice", choice: "sufficient", confidence: 0.9, probabilities: {} },
-              },
+          answers: {
+            verdict: { type: "choice", choice: "exclude", confidence: 0.9, probabilities: {} },
+            attractiveness: { type: "score", score: 1, confidence: 0.5, legend: {}, probabilities: {} },
+            durability: { type: "score", score: 1, confidence: 0.5, legend: {}, probabilities: {} },
+            accountingQuality: { type: "choice", choice: "clean", confidence: 0.5, probabilities: {} },
+            dominantRisk: { type: "choice", choice: "none", confidence: 0.5, probabilities: {} },
+            managementCandor: { type: "choice", choice: "direct", confidence: 0.5, probabilities: {} },
+            sufficiency: { type: "choice", choice: "sufficient", confidence: 0.9, probabilities: {} },
+          },
           usage: { input_tokens: 10, output_tokens: 1 },
         });
       },
@@ -336,8 +328,8 @@ test("triage sees no price; judgment does", async () => {
 
     await runScreen({ store, edgar, prices: stubPrices(), client });
 
-    assert.equal(states.filter((s) => s.stage === "triage").every((s) => !s.hasMultiple), true);
-    assert.equal(states.filter((s) => s.stage === "judgment").some((s) => s.hasMultiple), true);
+    assert.ok(states.length > 0);
+    assert.equal(states.some((state) => state.hasMultiple), true, "priced companies carry multiples");
   } finally {
     await store.close();
   }
@@ -360,7 +352,7 @@ test("a second run with no new filings is served from cache", async () => {
     assert.deepEqual(secondPrices.calls, [], "no price was fetched on the second run");
     assert.equal(report.usage.inputTokens, 0, "a cached run costs no tokens");
     assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"], "same answer from cache");
-    assert.ok(report.cache.hits >= 5);
+    assert.ok(report.cache.hits >= 3, "every judgment came from cache");
   } finally {
     await store.close();
   }
@@ -383,7 +375,7 @@ test("narrowing to one ticker still compares it against the whole universe", asy
 
     const report = await runScreen({ store, edgar, prices: stubPrices(), client: spy, tickers: [ticker("GOOD")] });
 
-    assert.equal(report.triaged, 1, "only one company was judged");
+    assert.equal(report.judged, 1, "only one company was judged");
     assert.equal(universeCount, 3, "but the yardstick still spans the eligible universe");
   } finally {
     await store.close();
@@ -445,7 +437,7 @@ test("explain_pick shows every number's source, tag and knownAt", async () => {
 
     assert.ok(explained.metrics.revenueGrowthTtm, "derived metrics are shown too");
     // Both stages' answers come back, with their full distributions.
-    assert.deepEqual(explained.judgments.map((j) => j.stage).sort(), ["judgment", "triage"]);
+    assert.deepEqual(explained.judgments.map((j) => j.stage), ["judgment"]);
     assert.ok(JSON.stringify(explained.judgments).includes("probabilities"));
   } finally {
     await store.close();
@@ -465,6 +457,14 @@ test("coverage_status reports the universe, sources and cache", async () => {
     assert.ok(coverage.lastRun);
     assert.ok(coverage.sources.length > 0);
     assert.ok(coverage.questionSetVersion);
+
+    // The thinnest-eligible list is what would have caught the XOM lookalike: a
+    // filer carrying a familiar symbol and almost no data. Thinnest first.
+    assert.ok(coverage.thinnestEligible.length > 0);
+    const counts = coverage.thinnestEligible.map((f) => f.observations);
+    assert.deepEqual(counts, [...counts].sort((a, b) => a - b), "thinnest first");
+    assert.ok(coverage.thinnestEligible.every((f) => f.label && f.name));
+    assert.equal(coverage.eligibleWithoutTicker, 0, "every seeded filer has a symbol");
   } finally {
     await store.close();
   }
@@ -496,7 +496,7 @@ test("a dead price source is abandoned, and the screen still produces picks", as
     // matters is that a failing source does not stop the pipeline.
     assert.ok(attempts > 0, "prices were attempted");
     assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"]);
-    assert.equal(report.judged, 2, "judgment ran without any price data");
+    assert.equal(report.judged, 3, "judgment ran without any price data");
   } finally {
     await store.close();
   }

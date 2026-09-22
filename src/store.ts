@@ -21,7 +21,7 @@ import {
   buildSlice, isoDate, observation,
   type Entity, type ISODate, type Observation, type ObservationSlice, type Reliability, type Ticker,
 } from "./observation.ts";
-import type { FilerProfile } from "./universe.ts";
+import { sectorForSic, type FilerProfile } from "./universe.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS observations (
@@ -296,7 +296,9 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
         tickers: JSON.parse(asString(row["tickers"]) || "[]") as FilerProfile["tickers"],
         name: asString(row["name"]),
         sic: asString(row["sic"]),
-        sector: asString(row["sector"]),
+        // Derived on load, not trusted from the column: the SIC is the fact, the
+        // sector is a grouping we may want to change without a 15-minute re-ingest.
+        sector: sectorForSic(asString(row["sic"])),
         filings: JSON.parse(asString(row["filings"])) as FilerProfile["filings"],
       }));
     },

@@ -4,8 +4,8 @@ import { CONTAMINATION_WINDOW_DAYS } from "./constants.ts";
 import type { DerivedMetric } from "./metrics.ts";
 import { cik,isoDate, ticker, type Ticker } from "./observation.ts";
 import {
-  ContaminatedRunError, assemble, assertRunnable, buildTriageState,
-  judgmentQuestionSet, triageQuestionSet, type Judged, type JudgmentResult,
+  ContaminatedRunError, assemble, assertRunnable,
+  judgmentQuestionSet, type Judged, type JudgmentResult,
 } from "./screen.ts";
 
 type Verdict = "include" | "watch" | "exclude";
@@ -115,28 +115,8 @@ test("the flag lets it run, and stamps every result as contaminated", () => {
   assert.match(stamp.notice ?? "", /must not be used to evaluate/);
 });
 
-test("triage state carries no price, and says so", () => {
-  const state = buildTriageState(
-    {
-      entity: cik("320193"), label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
-      metrics: {}, inputs: [], hasPrice: false,
-    },
-    {
-      asOf: isoDate("2026-09-01"),
-      universe: { count: 4000, distributions: {} },
-      sector: { name: "retail", count: 300, distributions: {} },
-    },
-  );
-
-  assert.match(JSON.stringify(state.note), /No price or valuation data/);
-  assert.equal(JSON.stringify(state).includes("priceToEarnings"), false);
-});
-
 test("the question sets are the shapes the rules require", () => {
   // Discrete decisions must be `choice`; ordered ones must be `score`.
-  assert.equal(triageQuestionSet.advance.type, "choice");
-  assert.deepEqual(Object.keys(triageQuestionSet.advance.criteria), ["advance", "drop"]);
-
   assert.equal(judgmentQuestionSet.verdict.type, "choice");
   assert.equal(judgmentQuestionSet.attractiveness.type, "score");
   assert.equal(judgmentQuestionSet.durability.type, "score");

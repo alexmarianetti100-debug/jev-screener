@@ -300,7 +300,7 @@ test("explain_pick exposes provenance for every number", async () => {
     assert.match(String(revenue["source"]), /^edgar:/);
 
     const judgments = result["judgments"] as Record<string, unknown>[];
-    assert.deepEqual(judgments.map((j) => j["stage"]).sort(), ["judgment", "triage"]);
+    assert.deepEqual(judgments.map((j) => j["stage"]), ["judgment"]);
     assert.equal(judgments[0]?.["fromCache"], true);
   } finally {
     await close();

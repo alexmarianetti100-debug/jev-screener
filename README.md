@@ -76,12 +76,10 @@ jev is the one that decides what to do about them.
    net debt/EBITDA, dilution, accrual ratio, working-capital-versus-sales gaps.
 5. **Peer context** — the metric distribution (min/p25/median/p75/max) across the **whole eligible
    universe** and within the company's sector.
-6. **Stage 1, triage** — one jev call per eligible company, ~300 tokens, no filing text. One
-   question: `advance`.
-7. **Stage 2, judgment** — for survivors only, fetch price and filing text, then ask the full
-   seven-question set (~15,000 tokens).
-8. **Assemble** — inclusion from `verdict.choice`, order from `attractiveness.score`.
-9. **Persist** — every run is written to the `runs` table, in full.
+6. **Judgment** — fetch price and filing text, then one jev call per eligible company with the
+   full seven-question set.
+7. **Assemble** — inclusion from `verdict.choice`, order from `attractiveness.score`.
+8. **Persist** — every run is written to the `runs` table, in full.
 
 ### Why the peer context is computed once
 
@@ -153,17 +151,26 @@ Measured on a live ingest, 2026-09-21:
 | **Eligible universe** | **3,962** |
 | Biggest eligibility failures | too few revenue quarters (12,674), 10-K older than 18 months (8,949), no operating cash flow (6,170), no 10-K on file (5,477), foreign issuer or fund (4,156) |
 | Slice + eligibility pass | ~10 s |
-| Triage | 3,098 input tokens/company, ~$0.00013 each |
 | Judgment | 9,824 input tokens/company, ~$0.00041 each |
+| Eligible filers SEC lists no ticker for | 310 |
 
-So a full triage sweep of the universe is about **$0.43**, and judging every survivor about
-**$1.30**. The cache means you pay that once per filing cycle, not per run.
+So a full sweep is roughly **$1.60**. The cache means you pay that once per filing cycle, not
+per run.
 
-**Triage is currently too permissive.** On the live universe it advanced 3,173 of 3,305 — 96%.
-The `advance` criteria as written describe almost any company, so the cheap stage is not doing its
-job of keeping expensive calls off the whole universe. This is a question-wording problem, not a
-code one; fixing it means tightening the `drop` criterion so an unremarkable company drops by
-default, and bumping `QUESTION_SET_VERSION` (which invalidates the cached triage answers).
+### Why there is no cheap pre-filter
+
+There was one: a `triage` stage that saw a metrics row and no filing text, and answered
+`advance | drop` for ~300 tokens. On the live universe it advanced 3,173 of 3,305 — **96%** — so
+it was not filtering, it was adding a call.
+
+Rewording it would not have helped, and it is worth being clear about why. The only inputs that
+let you say "no" with conviction are the filing text and the valuation, and those are definitionally
+what the second stage adds. jev was being asked to discriminate on evidence too thin to
+discriminate on, and it declined to — which is well-calibrated behaviour, not a bug.
+
+Removing the stage also closed a subtler hole: it made an inclusion decision on *worse*
+information than judgment did, so a company could be dropped for a reason the full question set
+would have overturned. One pass, one question set, nothing that judges blind.
 
 **Two operational constraints worth knowing:**
 
@@ -181,11 +188,10 @@ default, and bumping `QUESTION_SET_VERSION` (which invalidates the cached triage
 
 ## Four limitations, stated plainly
 
-**1. Triage sees no price.** Stooq has no bulk endpoint, so prices are fetched only for triage
-survivors. Stage 1 therefore judges operating fundamentals with no valuation multiple whatsoever —
-a company is advanced because of what the business looks like, never because it looks cheap.
-Multiples exist only at stage 2. `ingest --prices-all` refreshes the full eligible universe if you
-would rather pay that cost on a schedule.
+**1. Prices are fetched one symbol at a time.** Stooq has no bulk endpoint, so the price stage is
+the slowest part of a cold run, and a filer SEC lists no ticker for cannot be priced at all — it
+is judged on fundamentals and filing text, with multiples absent. A dead source trips a circuit
+breaker after a short streak rather than stalling the run for hours.
 
 **2. This screener judges quality, not mispricing.** There is no free consensus-estimate feed
 worth using, so nothing here knows what the market expects. It can tell you a business looks
@@ -306,11 +312,8 @@ Bump `QUESTION_SET_VERSION` in `constants.ts` on any change to either set — wo
 ordering, additions or removals. Judgments are cached under that string, so a stale version
 silently serves answers to a question you no longer ask.
 
-**Stage 1** — state is the metrics row plus both peer contexts. No filing text.
-
-- `advance` — `choice` over `advance | drop`
-
-**Stage 2** — adds multiples and an MD&A / Risk Factors excerpt.
+State is the metrics row, both peer contexts, the multiples where a price was available, and an
+MD&A / Risk Factors excerpt.
 
 - `verdict` — `choice` over `include | watch | exclude` — *this is the screen*
 - `attractiveness` — `score` — *this is the rank key*

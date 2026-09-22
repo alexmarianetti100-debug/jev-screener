@@ -32,8 +32,8 @@ test("a row with no inputs falls back to the slice date", () => {
 });
 
 test("the key changes when a new filing lands", () => {
-  const before = cacheKeyFor(rowWith("2026-05-01"), "v1", "triage");
-  const after = cacheKeyFor(rowWith("2026-05-01", "2026-08-01"), "v1", "triage");
+  const before = cacheKeyFor(rowWith("2026-05-01"), "v1", "judgment");
+  const after = cacheKeyFor(rowWith("2026-05-01", "2026-08-01"), "v1", "judgment");
 
   assert.notEqual(serializeKey(before), serializeKey(after));
   assert.equal(after.maxKnownAt, "2026-08-01");
@@ -42,29 +42,21 @@ test("the key changes when a new filing lands", () => {
 test("the key changes when the question set is bumped", () => {
   const row = rowWith("2026-05-01");
   assert.notEqual(
-    serializeKey(cacheKeyFor(row, "v1", "triage")),
-    serializeKey(cacheKeyFor(row, "v2", "triage")),
-  );
-});
-
-test("triage and judgment are cached separately for the same company", () => {
-  const row = rowWith("2026-05-01");
-  assert.notEqual(
-    serializeKey(cacheKeyFor(row, "v1", "triage")),
     serializeKey(cacheKeyFor(row, "v1", "judgment")),
+    serializeKey(cacheKeyFor(row, "v2", "judgment")),
   );
 });
 
 test("time passing alone does not expire an entry", () => {
   // Same inputs, same questions, a month later: the answer cannot have changed.
-  const monday = cacheKeyFor(rowWith("2026-05-01"), "v1", "triage");
-  const later = cacheKeyFor(rowWith("2026-05-01"), "v1", "triage");
+  const monday = cacheKeyFor(rowWith("2026-05-01"), "v1", "judgment");
+  const later = cacheKeyFor(rowWith("2026-05-01"), "v1", "judgment");
   assert.equal(serializeKey(monday), serializeKey(later));
 });
 
 test("a miss computes and stores; a hit does not call jev again", async () => {
   const cache = memoryCache();
-  const key = cacheKeyFor(rowWith("2026-05-01"), "v1", "triage");
+  const key = cacheKeyFor(rowWith("2026-05-01"), "v1", "judgment");
   let calls = 0;
 
   const compute = async () => {
@@ -95,8 +87,8 @@ test("a new filing forces a fresh judgment", async () => {
     return { value: { n: calls }, model: "jev", inputTokens: 1, outputTokens: 1 };
   };
 
-  await throughCache(cache, cacheKeyFor(rowWith("2026-05-01"), "v1", "triage"), compute);
-  const afterFiling = await throughCache(cache, cacheKeyFor(rowWith("2026-05-01", "2026-08-01"), "v1", "triage"), compute);
+  await throughCache(cache, cacheKeyFor(rowWith("2026-05-01"), "v1", "judgment"), compute);
+  const afterFiling = await throughCache(cache, cacheKeyFor(rowWith("2026-05-01", "2026-08-01"), "v1", "judgment"), compute);
 
   assert.equal(afterFiling.fromCache, false);
   assert.equal(calls, 2);

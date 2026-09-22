@@ -118,7 +118,7 @@ export function createMcpServer(store: Store): Server {
             questionSetVersion: report.questionSetVersion,
             counts: {
               considered: report.considered, eligible: report.eligible,
-              triaged: report.triaged, advanced: report.advanced, judged: report.judged,
+              judged: report.judged,
               included: report.picks.length,
             },
             cache: report.cache,

@@ -15,7 +15,8 @@
 import type { MetricRow } from "./metrics.ts";
 import type { Entity, ISODate, Observation } from "./observation.ts";
 
-export type Stage = "triage" | "judgment";
+/** Kept as a union so a future second stage does not need a schema change. */
+export type Stage = "judgment";
 
 export interface CacheKey {
   readonly entity: Entity;

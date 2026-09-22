@@ -166,6 +166,19 @@ export function buildUniverse(
 export function sectorForSic(sic: string): string {
   const code = Number.parseInt(sic, 10);
   if (!Number.isFinite(code)) return "unknown";
+
+  // Healthcare is pulled out of three SIC divisions before the ranges below get a
+  // say, because the divisions scatter it: an insurer sits in Finance next to banks,
+  // a drug maker in Manufacturing next to steel mills. Comparing UnitedHealth's
+  // margins against JPMorgan's tells jev nothing, and the peer context is the only
+  // yardstick it has. This decides who is compared with whom, never who is good.
+  const healthcare =
+    (code >= 2833 && code <= 2836) ||   // pharmaceuticals and biologics
+    (code >= 3841 && code <= 3851) ||   // medical devices and instruments
+    code === 6321 || code === 6324 ||   // accident, health and hospital plans
+    (code >= 8000 && code <= 8099);     // providers, labs and health services
+  if (healthcare) return "healthcare";
+
   if (code < 1000) return "agriculture";
   if (code < 1500) return "mining & energy";
   if (code < 1800) return "construction";

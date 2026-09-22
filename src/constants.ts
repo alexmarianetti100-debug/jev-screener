@@ -72,7 +72,7 @@ export const FILING_EXCERPT_CHARS = 12_000;
  * ordering, added or removed questions. Judgments are cached under this string, so
  * a stale version silently serves answers to a question you no longer ask.
  */
-export const QUESTION_SET_VERSION = "2026-09-21.1";
+export const QUESTION_SET_VERSION = "2026-09-21.2";
 
 // ── Contamination ─────────────────────────────────────────────────────────────
 

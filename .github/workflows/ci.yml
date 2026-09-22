@@ -1,0 +1,42 @@
+name: ci
+
+# The suite needs no network and no API key — every source is stubbed, including
+# the bulk ZIP reader, which parses an archive built byte by byte in the test. So
+# CI runs the real checks rather than a subset of them.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test
+        run: npm test
+
+      - name: build
+        run: npm run build
+
+      # The design rule is enforced by tests, but a reviewer should be able to see
+      # at a glance that no scoring function crept in between them.
+      - name: no scoring function
+        run: |
+          if [ -f src/scoring.ts ]; then
+            echo "src/scoring.ts exists — the code is not supposed to decide what is good"
+            exit 1
+          fi
+          echo "no scoring function present"

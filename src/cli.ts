@@ -904,6 +904,43 @@ export async function runProbe(options: {
   return summariseProbe(outcomes, sample.length);
 }
 
+/** Print a screen. Shared, so demo output and live output cannot drift apart. */
+export function renderScreen(report: ScreenReport): void {
+  console.log(`\njev picks as of ${report.stamp.asOf} — question set ${report.questionSetVersion}\n`);
+  if (report.picks.length === 0) {
+    console.log("  jev included nothing in this run.\n");
+  }
+
+  for (const [index, pick] of report.picks.entries()) {
+    const { attractiveness, verdict, answers } = pick;
+    console.log(
+      `  ${String(index + 1).padStart(3)}. ${pick.label.padEnd(6)} ${attractiveness.score.toFixed(2)}  ` +
+        `${pick.sector}${pick.fromCache ? "  (cached)" : ""}`,
+    );
+    console.log(
+      `       verdict ${verdict.choice} ${(verdict.confidence * 100).toFixed(0)}%  ·  ` +
+        `durability ${answers.durability.score.toFixed(2)}  ·  accounting ${answers.accountingQuality.choice}  ·  ` +
+        `risk ${answers.dominantRisk.choice}  ·  candor ${answers.managementCandor.choice}  ·  ` +
+        `evidence ${answers.sufficiency.choice}\n       ` +
+        `settles via ${answers.horizonDriver.choice}  ·  ${horizonLabel(answers.horizonBand.score)} ` +
+        `(band ${answers.horizonBand.score.toFixed(2)} of 4)`,
+    );
+  }
+
+  console.log(
+    `\n  ${report.eligible} eligible of ${report.considered} filers · ${report.judged} judged`,
+  );
+  console.log(
+    `  cache ${report.cache.hits} hits / ${report.cache.misses} misses · ` +
+      `${report.usage.inputTokens} in / ${report.usage.outputTokens} out tokens · run ${report.runId}`,
+  );
+  if (report.failures.length > 0) {
+    console.log(`  ${report.failures.length} failures:`);
+    for (const failure of report.failures.slice(0, 10)) console.log(`    ${failure}`);
+  }
+  console.log("\n  Candidates for human review. Not a recommendation to buy or sell anything.\n");
+}
+
 /**
  * Grade every persisted run that carries a roster.
  *
@@ -984,6 +1021,20 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (subcommand === "demo") {
+      const { seedDemoStore, demoClients } = await import("./demo.ts");
+      const demoStore = await seedDemoStore();
+      try {
+        const { client, prices, edgar } = demoClients();
+        const report = await runScreen({ store: demoStore, client, prices, edgar, limit: 10 });
+        renderScreen(report);
+        console.log("  Fixtures and a stubbed model. The pipeline is real; the judgment is not.\n");
+      } finally {
+        await demoStore.close();
+      }
+      return;
+    }
+
     if (subcommand === "twins") {
       const sample = Number(flags.get("sample") ?? "40");
       console.log(JSON.stringify(await runTwins({ store, sample, log: (m) => console.log(m) }), null, 2));
@@ -1040,39 +1091,7 @@ async function main(): Promise<void> {
 function printScreen(report: ScreenReport): void {
   if (report.stamp.notice) console.log(`\n${report.stamp.notice}`);
 
-  console.log(`\njev picks as of ${report.stamp.asOf} — question set ${report.questionSetVersion}\n`);
-  if (report.picks.length === 0) {
-    console.log("  jev included nothing in this run.\n");
-  }
-
-  for (const [index, pick] of report.picks.entries()) {
-    const { attractiveness, verdict, answers } = pick;
-    console.log(
-      `  ${String(index + 1).padStart(3)}. ${pick.label.padEnd(6)} ${attractiveness.score.toFixed(2)}  ` +
-        `${pick.sector}${pick.fromCache ? "  (cached)" : ""}`,
-    );
-    console.log(
-      `       verdict ${verdict.choice} ${(verdict.confidence * 100).toFixed(0)}%  ·  ` +
-        `durability ${answers.durability.score.toFixed(2)}  ·  accounting ${answers.accountingQuality.choice}  ·  ` +
-        `risk ${answers.dominantRisk.choice}  ·  candor ${answers.managementCandor.choice}  ·  ` +
-        `evidence ${answers.sufficiency.choice}\n       ` +
-        `settles via ${answers.horizonDriver.choice}  ·  ${horizonLabel(answers.horizonBand.score)} ` +
-        `(band ${answers.horizonBand.score.toFixed(2)} of 4)`,
-    );
-  }
-
-  console.log(
-    `\n  ${report.eligible} eligible of ${report.considered} filers · ${report.judged} judged`,
-  );
-  console.log(
-    `  cache ${report.cache.hits} hits / ${report.cache.misses} misses · ` +
-      `${report.usage.inputTokens} in / ${report.usage.outputTokens} out tokens · run ${report.runId}`,
-  );
-  if (report.failures.length > 0) {
-    console.log(`  ${report.failures.length} failures:`);
-    for (const failure of report.failures.slice(0, 10)) console.log(`    ${failure}`);
-  }
-  console.log("\n  Candidates for human review. Not a recommendation to buy or sell anything.\n");
+  renderScreen(report);
 }
 
 // Only run when invoked directly, so `mcp.ts` can import the pipeline.

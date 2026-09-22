@@ -15,7 +15,8 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/**/*.test.ts"
+    "test": "node --test src/**/*.test.ts",
+    "demo": "node --env-file-if-exists=.env src/cli.ts screen demo"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.5-r.5",

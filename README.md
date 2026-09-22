@@ -16,6 +16,19 @@ good, you will not find one — that is the design, not an omission.
 million real observations taught, and the two experiments measuring whether the model judges the
 evidence or the company.
 
+## See it without credentials
+
+```sh
+npm install
+npm run demo
+```
+
+Three fixture companies, a stubbed model, no keys and no network. The pipeline is
+real — eligibility, metrics, peer distributions, the point-in-time slice, caching,
+assembly and persistence all execute exactly as they do live. Only the two things that
+cost money are replaced, and the stub is deliberately mechanical so nothing in its
+output should be mistaken for what jev actually does.
+
 ## Setup
 
 ```sh

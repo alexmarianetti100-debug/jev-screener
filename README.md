@@ -12,6 +12,10 @@ good, you will not find one — that is the design, not an omission.
 > Output is **candidates for human review**. This system never places orders and makes no buy or
 > sell recommendation.
 
+[**PAPER.md**](PAPER.md) is the write-up: what the design rule is, what running it against 6.2
+million real observations taught, and the two experiments measuring whether the model judges the
+evidence or the company.
+
 ## Setup
 
 ```sh

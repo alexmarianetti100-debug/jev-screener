@@ -19,11 +19,26 @@ export { QUESTION_SET_VERSION };
 // ── Stage 2: judgment ─────────────────────────────────────────────────────────
 
 export const judgmentQuestionSet = {
-  verdict: choice("Should this company go on a list for a human analyst to review?", {
-    include: "Yes — the fundamentals and the filing language together make this worth a person's time now.",
-    watch: "Not now, but worth revisiting when the next filing lands.",
-    exclude: "No.",
-  }),
+  // Phrased around scarcity, not worthiness.
+  //
+  // The previous wording asked whether a company was "worth a person's time now",
+  // and on the live universe it answered include for 97% of 3,962 companies. That is
+  // the question working correctly: almost any solvent filer with twelve quarters of
+  // history is worth *somebody's* time. Adding valuation data did not move it, which
+  // ruled out thin evidence as the cause.
+  //
+  // A screen needs the opposite framing. `include` now has to clear a bar defined by
+  // the other candidates rather than by the company alone, so choosing it means
+  // asserting a comparison instead of an absence of objections.
+  verdict: choice(
+    "Analyst attention is the scarce resource. Against the peer distributions supplied, " +
+      "does this company earn one of the few places on the list — not merely deserve one?",
+    {
+      include: "Yes. On this evidence it displaces companies that are merely good.",
+      watch: "No — but something specific and nameable would change that, and the next filing would show it.",
+      exclude: "No. Nothing here argues for it over the alternatives.",
+    },
+  ),
 
   attractiveness: score(
     "Relative to the peer distributions given, how attractive is this business as a candidate for further research?",

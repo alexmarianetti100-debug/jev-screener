@@ -74,19 +74,32 @@ export const FILING_FETCH_POOL_SIZE = 8;
 export const INGEST_BATCH_SIZE = 50_000;
 
 /**
- * Characters of MD&A and Risk Factors passed to stage 2. A token budget: raising it
- * costs more per company, it does not make any company look better or worse.
+ * Characters of MD&A and Risk Factors passed to judgment, per section.
+ *
+ * A token budget: raising it costs more per company, it does not make any company
+ * look better or worse. Raised from 12,000 after a live run came back
+ * `sufficiency: thin` on 100% of picks with no prices, and still 88% with them —
+ * so valuation was part of the missing evidence but not most of it.
+ *
+ * Changing this changes what jev sees, so it needs a QUESTION_SET_VERSION bump for
+ * the same reason a reworded criterion does: cached judgments answered a different
+ * question. The cache key cannot see this number.
  */
-export const FILING_EXCERPT_CHARS = 12_000;
+export const FILING_EXCERPT_CHARS = 30_000;
 
 // ── Versioning ────────────────────────────────────────────────────────────────
 
 /**
- * Bump on ANY change to either question set in `screen.ts` — wording, criteria,
+ * Bump on ANY change to the question set in `screen.ts` — wording, criteria,
  * ordering, added or removed questions. Judgments are cached under this string, so
  * a stale version silently serves answers to a question you no longer ask.
+ *
+ * The excerpt size is folded in rather than left to discipline. It is not part of
+ * the question, but it changes what jev is shown, and the cache key cannot see it.
+ * Forgetting to bump after widening it would serve judgments formed on less
+ * evidence — exactly the failure the price flag had to be added to the key to stop.
  */
-export const QUESTION_SET_VERSION = "2026-09-21.2";
+export const QUESTION_SET_VERSION = `2026-09-22.1+${FILING_EXCERPT_CHARS}`;
 
 // ── Contamination ─────────────────────────────────────────────────────────────
 

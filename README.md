@@ -19,6 +19,7 @@ npm install
 cp .env.example .env    # OPENROUTER_API_KEY, and EDGAR_USER_AGENT with your own address
 npm run check           # confirms the key works and jev is reachable
 npm run ingest          # ~5 min: two bulk ZIPs from SEC EDGAR
+npm run ingest -- --prices-only   # just refresh closes, archives untouched
 npm run screen          # the full pipeline
 ```
 
@@ -99,6 +100,11 @@ Market data is deliberately excluded from the vintage. A closing price is new ev
 so counting it would expire every judgment nightly and undo the whole thing. The trade-off is
 real: a cached verdict was formed against the multiples of the day it was made, so a company
 whose price has moved sharply carries a stale valuation until its next filing.
+
+Ingest is idempotent: re-reading an archive produces byte-identical observations, and a
+compaction pass folds them back together rather than letting the table double. Append-only means
+a restatement is a new row, not an overwrite — it does not mean the same fact belongs on file
+twice.
 
 A fully cached run touches neither the price source nor EDGAR and needs no API key at all, which is what
 makes `screen_run` cheap enough to call from a conversation.

@@ -107,6 +107,15 @@ export interface Store {
    */
   sliceAsOf(asOf: ISODate, options?: { metrics?: readonly string[]; entities?: readonly Entity[] }): Promise<ObservationSlice>;
   observationCount(): Promise<number>;
+  /**
+   * Drop rows that repeat a fact already stored, and report how many went.
+   *
+   * Append-only means a restatement is a new row, never an overwrite — it does not
+   * mean the same fact belongs in the table twice. Re-reading an archive yields
+   * byte-identical observations, and keeping both copies carries no information
+   * while doubling every slice, which is what exhausts memory on the live universe.
+   */
+  compact(): Promise<number>;
   saveFilers(profiles: readonly FilerProfile[]): Promise<void>;
   loadFilers(): Promise<FilerProfile[]>;
   saveRun(run: RunRecord): Promise<void>;
@@ -275,6 +284,28 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
     async observationCount() {
       const reader = await connection.runAndReadAll("SELECT count(*) AS n FROM observations");
       return asNumber(reader.getRowObjectsJS()[0]?.["n"]);
+    },
+
+    async compact() {
+      const before = await connection.runAndReadAll("SELECT count(*) AS n FROM observations");
+      const start = asNumber(before.getRowObjectsJS()[0]?.["n"]);
+
+      // Rebuild rather than DELETE: on millions of rows a grouped anti-join scan is
+      // far cheaper than deleting row by row, and the table is rewritten compactly.
+      await connection.run(`
+        CREATE OR REPLACE TABLE observations_compacted AS
+        SELECT entity, metric, valid_at, known_at, value, source, reliability, tag,
+               min(ingested_at) AS ingested_at
+        FROM observations
+        GROUP BY entity, metric, valid_at, known_at, value, source, reliability, tag`);
+      await connection.run("DROP TABLE observations");
+      await connection.run("ALTER TABLE observations_compacted RENAME TO observations");
+      await connection.run(`
+        CREATE INDEX IF NOT EXISTS observations_scan ON observations (metric, known_at);
+        CREATE INDEX IF NOT EXISTS observations_entity ON observations (entity, metric);`);
+
+      const after = await connection.runAndReadAll("SELECT count(*) AS n FROM observations");
+      return start - asNumber(after.getRowObjectsJS()[0]?.["n"]);
     },
 
     async saveFilers(profiles) {

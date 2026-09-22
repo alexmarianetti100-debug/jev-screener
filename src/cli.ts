@@ -50,6 +50,8 @@ export interface IngestOptions {
   readonly prices?: PriceClient;
   /** Also refresh prices for the whole eligible universe. Slow; opt-in. */
   readonly pricesAll?: boolean;
+  /** Refresh closes without touching the bulk archives. */
+  readonly pricesOnly?: boolean;
   readonly log?: (message: string) => void;
 }
 
@@ -67,7 +69,32 @@ export interface IngestReport {
  * be ~10,000 requests against a 10/second limit — about twenty minutes of nothing
  * but waiting, repeated on every run.
  */
+/**
+ * Pull recent closes. Prices are keyed by day, not by company, so this needs the
+ * filer table only to know which symbols belong to whom — never the archives.
+ */
+export async function refreshPrices(
+  store: Store,
+  prices: PriceClient,
+  profiles: readonly FilerProfile[],
+  log: (message: string) => void,
+): Promise<number> {
+  const days = recentDays(todayISO(), PRICE_BACKFILL_DAYS);
+  log(`refreshing ${days.length} days of closes…`);
+  return (await ingestPrices(store, prices, days, entityIndex(profiles), log)).stored;
+}
+
 export async function runIngest(options: IngestOptions): Promise<IngestReport> {
+  // Prices alone: re-reading 2.8 GB of archives to fetch five days of closes would be
+  // absurd, and it is what duplicated the observation table the first time.
+  if (options.pricesOnly) {
+    const log = options.log ?? (() => {});
+    const profiles = await options.store.loadFilers();
+    const priceObservations = await refreshPrices(
+      options.store, options.prices ?? createPriceClient(), profiles, log);
+    return { filers: profiles.length, observations: 0, priceObservations, skipped: 0 };
+  }
+
   const log = options.log ?? (() => {});
   const edgar = options.edgar ?? createEdgarClient({ log });
 
@@ -135,17 +162,14 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   if (batch.length > 0) observations += await options.store.appendObservations(batch);
   log(`  ${observations} observations from ${profiles.length - skipped} companies`);
 
-  let priceObservations = 0;
-  if (options.pricesAll) {
-    const prices = options.prices ?? createPriceClient();
-    const asOf = todayISO();
-    const slice = await options.store.sliceAsOf(asOf);
-    const universe = buildUniverse(profiles, slice, asOf);
-    log(`refreshing prices for ${universe.eligible.length} eligible companies…`);
-    const days = recentDays(asOf, PRICE_BACKFILL_DAYS);
-    log(`refreshing ${days.length} days of closes…`);
-    priceObservations = (await ingestPrices(options.store, prices, days, entityIndex(profiles), log)).stored;
-  }
+  // Re-reading an archive produces byte-identical observations. Keeping both copies
+  // carries no information and doubles every slice, so fold them back together.
+  const removed = await options.store.compact();
+  if (removed > 0) log(`  compacted ${removed} rows already on file`);
+
+  const priceObservations = options.pricesAll
+    ? await refreshPrices(options.store, options.prices ?? createPriceClient(), profiles, log)
+    : 0;
 
   return { filers: profiles.length, observations, priceObservations, skipped };
 }
@@ -648,7 +672,8 @@ const HELP = `
 jev stock screener
 
   npm run ingest  [-- --prices-all]
-      Backfill from the SEC bulk archives. --prices-all also refreshes Stooq
+      Backfill from the SEC bulk archives. --prices-all also refreshes closes;
+      --prices-only refreshes closes alone, without re-reading the archives
       prices for the whole eligible universe (slow).
 
   npm run screen  [-- --as-of=YYYY-MM-DD] [--ticker=AAPL,MSFT] [--sector=retail]
@@ -677,7 +702,9 @@ async function main(): Promise<void> {
 
   try {
     if (command === "ingest") {
-      const report = await runIngest({ store, pricesAll: flags.has("prices-all"), log });
+      const report = await runIngest({
+        store, pricesAll: flags.has("prices-all"), pricesOnly: flags.has("prices-only"), log,
+      });
       console.log(`\ningested ${report.observations} observations for ${report.filers} filers` +
         (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
         `\n${report.skipped} companyfacts entries skipped (no ticker)\n`);

@@ -198,3 +198,34 @@ test("a lock error with no PID still reads sensibly", () => {
   assert.match(friendly.message, /already open by another process\./);
   assert.equal(/PID|ps -p/.test(friendly.message), false);
 });
+
+test("compaction folds repeated facts together and keeps real revisions", async () => {
+  await withStore(async (store) => {
+    const fact = {
+      value: 100, metric: "revenue", entity: ACME, validAt: isoDate("2026-03-31"),
+      knownAt: isoDate("2026-05-01"), source: "edgar:10-Q:a", reliability: "reported" as const,
+    };
+    // The same archive read twice yields byte-identical rows.
+    await store.appendObservations([observation(fact), observation(fact), observation(fact)]);
+    // A genuine restatement differs in knownAt, and must survive.
+    await store.appendObservations([observation({ ...fact, value: 110, knownAt: isoDate("2026-08-01") })]);
+
+    assert.equal(await store.observationCount(), 4);
+    assert.equal(await store.compact(), 2, "two redundant copies removed");
+    assert.equal(await store.observationCount(), 2, "the fact and its restatement both remain");
+
+    const slice = await store.sliceAsOf(isoDate("2026-09-01"));
+    assert.equal(slice.latest(ACME, "revenue")?.value, 110, "the restatement still wins");
+  });
+});
+
+test("compacting a table with nothing to fold changes nothing", async () => {
+  await withStore(async (store) => {
+    await store.appendObservations([observation({
+      value: 1, metric: "revenue", entity: ACME, validAt: isoDate("2026-03-31"),
+      knownAt: isoDate("2026-05-01"), source: "edgar:10-Q:a", reliability: "reported",
+    })]);
+    assert.equal(await store.compact(), 0);
+    assert.equal(await store.observationCount(), 1);
+  });
+});

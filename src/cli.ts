@@ -17,7 +17,7 @@ import { cacheKeyFor, throughCache } from "./cache.ts";
 import { createClient } from "./client.ts";
 import {
   DEFAULT_SCREEN_LIMIT, FILING_FETCH_POOL_SIZE, INGEST_BATCH_SIZE, JEV_POOL_SIZE,
-  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION, PRICE_BACKFILL_DAYS,
+  PRICE_SOURCE_FAILURE_LIMIT, QUESTION_SET_VERSION, PRICE_BACKFILL_DAYS, FILING_EXCERPT_CHARS,
 } from "./constants.ts";
 import {
   COMPANY_FACTS_ZIP, SUBMISSIONS_ZIP, cacheName, createEdgarClient, factsToObservations,
@@ -38,6 +38,10 @@ import {
 } from "./screen.ts";
 import { openStore, type Store } from "./store.ts";
 import { gradeRun, type GradeReport, type RosterEntry } from "./grade.ts";
+import {
+  askProbe, buildSlate, redact, summariseProbe,
+  type ProbeOutcome, type ProbeReport,
+} from "./probe.ts";
 import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
 
 /** Metrics that exist only once a price has been fetched. */
@@ -707,6 +711,99 @@ export function horizonLabel(band: number): string {
 }
 
 /**
+ * Measure whether jev can recognise the companies it is shown.
+ *
+ * Sampled across the revenue range rather than off the top, because recognition is
+ * expected to track how much has been written about a company — and a sample of
+ * mega-caps would answer a question nobody asked.
+ */
+export async function runProbe(options: {
+  store: Store;
+  sample?: number;
+  edgar?: EdgarClient;
+  client?: TypeSafeClient;
+  log?: (message: string) => void;
+}): Promise<ProbeReport> {
+  const log = options.log ?? (() => {});
+  const asOf = todayISO();
+  const store = options.store;
+
+  const profiles = await store.loadFilers();
+  const slice = await store.sliceAsOf(asOf);
+  const universe = buildUniverse(profiles, slice, asOf);
+  const profileOf = new Map(profiles.map((p) => [p.entity, p]));
+
+  const rows = universe.eligible
+    .map((v) => {
+      const profile = profileOf.get(v.entity);
+      return profile ? computeMetrics(slice, v.entity, profile.sector, displayLabel(profile)) : undefined;
+    })
+    .flatMap((row) => (row ? [row] : []));
+
+  // Revenue level, not a ratio: MetricRow carries growth and margins, so the
+  // magnitude used for sampling and decoy matching comes from the slice directly.
+  const revenueOf = (row: MetricRow): number => {
+    const series = slice.series(row.entity, "revenue");
+    return series.slice(-4).reduce((total, o) => total + o.value, 0);
+  };
+  const withRevenue = rows.filter((row) => revenueOf(row) > 0).sort((a, b) => revenueOf(a) - revenueOf(b));
+
+  // Every nth company across the revenue range, so the sample spans obscure to famous.
+  const wanted = options.sample ?? 60;
+  const step = Math.max(1, Math.floor(withRevenue.length / wanted));
+  const sample = withRevenue.filter((_, i) => i % step === 0).slice(0, wanted);
+  log(`probing ${sample.length} companies of ${withRevenue.length} eligible with revenue…`);
+
+  const edgar = options.edgar ?? createEdgarClient({ log });
+  const jev = options.client ?? createClient();
+  const outcomes: ProbeOutcome[] = [];
+
+  for (const [index, row] of sample.entries()) {
+    const profile = profileOf.get(row.entity);
+    if (!profile) continue;
+
+    // Decoys: same sector, nearest revenue, so the slate cannot be solved by size.
+    const decoys = withRevenue
+      .filter((other) => other.entity !== row.entity && other.sector === row.sector)
+      .sort((a, b) => Math.abs(revenueOf(a) - revenueOf(row)) - Math.abs(revenueOf(b) - revenueOf(row)))
+      .slice(0, 3)
+      .map((other) => profileOf.get(other.entity)?.name ?? String(other.label));
+    if (decoys.length < 3) continue;
+
+    const slate = buildSlate(profile.name, decoys, String(row.entity));
+    const names = [profile.name, ...decoys];
+
+    let filingText: string | undefined;
+    const filing = latestFiling(profile, ["10-K", "10-K/A", "10-Q"], asOf);
+    if (filing) {
+      try {
+        const fetched = await fetchFilingText(edgar, profile.cik, filing);
+        filingText = redact(`${fetched.mdna}\n\n${fetched.riskFactors}`, names).slice(0, FILING_EXCERPT_CHARS);
+      } catch {
+        filingText = undefined;
+      }
+    }
+
+    for (const [condition, text] of [["numbers", undefined], ["text", filingText]] as const) {
+      if (condition === "text" && !text) continue;
+      try {
+        const result = await askProbe(jev, row, slate, text);
+        outcomes.push({
+          condition, entity: String(row.entity), label: row.label,
+          revenue: revenueOf(row), chosen: result.answers.identify.choice,
+          truth: slate.truth, confidence: result.answers.identify.confidence,
+        });
+      } catch (error) {
+        log(`  probe failed for ${row.label} (${condition}): ${(error as Error).message}`);
+      }
+    }
+    if ((index + 1) % 10 === 0) log(`  ${index + 1}/${sample.length}`);
+  }
+
+  return summariseProbe(outcomes, sample.length);
+}
+
+/**
  * Grade every persisted run that carries a roster.
  *
  * Reads prices as of today on purpose. This is the one place later data is the point
@@ -781,6 +878,12 @@ async function main(): Promise<void> {
         : `\ningested ${report.observations} observations for ${report.filers} filers` +
           (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
           `\n${report.skipped} companyfacts entries skipped (no submissions record)\n`);
+      return;
+    }
+
+    if (subcommand === "probe") {
+      const sample = Number(flags.get("sample") ?? "60");
+      console.log(JSON.stringify(await runProbe({ store, sample, log: (m) => console.log(m) }), null, 2));
       return;
     }
 

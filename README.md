@@ -281,7 +281,8 @@ pinned fingerprint.
 
 | Epoch | Fingerprint | Changed | Why |
 | --- | --- | --- | --- |
-| `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. Measurement starts here. |
+| `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. |
+| `2026-09-22.3+30000` | `577acd7794ca0418` | Dated obligations added to the state | `horizonBand` was resting on inference alone. Debt and lease maturity schedules and remaining performance obligations are contractual and dated, so the horizon can rest on something the filer committed to. The questions are untouched — the fingerprint is unchanged — but jev sees more, which is the same kind of break. Done deliberately before any forward data existed. **Measurement starts here.** |
 
 Everything before this epoch was development, not measurement. Those runs are still in
 the `runs` table and still readable, but they answered different questions and should

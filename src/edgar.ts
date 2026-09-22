@@ -409,6 +409,18 @@ export const TAG_CHAINS = {
   sharesOutstanding: ["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "WeightedAverageNumberOfDilutedSharesOutstanding"],
   receivables: ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent", "AccountsReceivableGrossCurrent"],
   inventory: ["InventoryNet", "InventoryGross"],
+
+  // ── Dated obligations ──
+  // Contractual and dated, unlike everything above, which describes a period that
+  // has already closed. A maturity schedule says when money must be found; remaining
+  // performance obligations say how much revenue is already contracted. They are what
+  // lets a horizon rest on something the filing commits to rather than on inference.
+  // Coverage measured on a 400-filer sample: debt ~62%, leases ~58%, RPO ~20%.
+  debtDueYear1: ["LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths", "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingTwelveMonths"],
+  debtDueYear2: ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo", "LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearTwo"],
+  leaseDueYear1: ["LesseeOperatingLeaseLiabilityPaymentsDueNextTwelveMonths", "LesseeOperatingLeaseLiabilityPaymentsDueNextRollingTwelveMonths"],
+  remainingPerformanceObligation: ["RevenueRemainingPerformanceObligation"],
+  contractLiability: ["ContractWithCustomerLiabilityCurrent", "ContractWithCustomerLiabilityCurrentAndNoncurrent"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Concept = keyof typeof TAG_CHAINS;

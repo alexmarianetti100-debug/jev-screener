@@ -8,7 +8,7 @@ import { cik, isoDate } from "./observation.ts";
 
 const row = (label: string) => ({
   entity: cik(1), label, sector: "retail", asOf: isoDate("2026-09-22"),
-  metrics: {}, inputs: [], hasPrice: false,
+  metrics: {}, obligations: {}, inputs: [], hasPrice: false,
 });
 
 const outcome = (condition: string, chosen: string, truth: Slot, revenue: number): ProbeOutcome =>

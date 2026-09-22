@@ -147,3 +147,30 @@ test("every computed metric keeps the provenance of what produced it", () => {
   assert.equal(margin.knownAt, filedAfter("2026-06-30"));
   assert.ok(margin.source.includes("edgar"));
 });
+
+test("dated obligations are levels, and absent is a fact rather than a gap", () => {
+  const rows = [
+    ...flow("revenue", [250, 250, 250, 250]),
+    instant("cash", 400), instant("debtDueYear1", 100), instant("debtDueYear2", 300),
+    instant("remainingPerformanceObligation", 2000),
+  ];
+  const row = computeMetrics(buildSlice(rows, ASOF), ACME, "services", "ACME");
+
+  assert.equal(row.obligations["debtDueYear1"], 100);
+  assert.equal(row.obligations["debtDueYear2"], 300);
+  // Two years of revenue already contracted — the clearest horizon signal available.
+  assert.equal(row.obligations["yearsOfRevenueContracted"], 2);
+  assert.equal(row.obligations["cashCoverOfNextYearDebt"], 4);
+  // Most filers publish no lease schedule, and saying so is information.
+  assert.equal(row.obligations["leaseDueYear1"], null);
+});
+
+test("a coverage ratio is not invented when its denominator is missing", () => {
+  const row = computeMetrics(
+    buildSlice([...flow("revenue", [10, 10, 10, 10]), instant("debtDueYear1", 0)], ASOF),
+    ACME, "services", "ACME",
+  );
+  // Zero debt due is not infinite coverage; it is a ratio that should not exist.
+  assert.equal(row.obligations["cashCoverOfNextYearDebt"], null);
+  assert.equal(row.obligations["yearsOfRevenueContracted"], null);
+});

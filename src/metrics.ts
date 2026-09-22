@@ -32,6 +32,18 @@ export interface MetricRow {
   readonly sector: string;
   readonly asOf: ISODate;
   readonly metrics: Readonly<Partial<Record<DerivedMetric, Observation>>>;
+  /**
+   * Dated contractual facts, as levels rather than ratios.
+   *
+   * Everything in `metrics` describes a period that has already closed. These say
+   * when money must be found and how much revenue is already contracted — the only
+   * figures in the state that point forwards on a schedule the filer committed to,
+   * which is what a horizon can rest on instead of inference.
+   *
+   * Absent is normal: roughly 62% of filers publish a maturity schedule and 20% an
+   * RPO, so `null` here is a fact about the filing, not a gap in the pipeline.
+   */
+  readonly obligations: Readonly<Record<string, number | null>>;
   /** Raw inputs kept for `explain_pick`, so every derived number can be traced. */
   readonly inputs: readonly Observation[];
   /** True when price was available, so multiples could be computed. */
@@ -253,5 +265,26 @@ export function computeMetrics(slice: ObservationSlice, entity: Entity, sector: 
     }
   }
 
-  return { entity, label, sector, asOf: slice.asOf, metrics, inputs, hasPrice };
+  // Levels, not ratios, plus the two coverage figures that make them comparable:
+  // years of revenue already contracted, and whether cash covers what falls due next.
+  const obligationOf = (metric: string): number | null => latest(metric)?.value ?? null;
+  const contractedAgainst = sumOf(series("revenue").slice(-4));
+  const cashNow = obligationOf("cash");
+  const debtYear1 = obligationOf("debtDueYear1");
+  const rpo = obligationOf("remainingPerformanceObligation");
+
+  const obligations: Record<string, number | null> = {
+    debtDueYear1: debtYear1,
+    debtDueYear2: obligationOf("debtDueYear2"),
+    leaseDueYear1: obligationOf("leaseDueYear1"),
+    remainingPerformanceObligation: rpo,
+    contractLiability: obligationOf("contractLiability"),
+    yearsOfRevenueContracted: rpo !== null && contractedAgainst
+      ? Number((rpo / contractedAgainst).toFixed(3)) : null,
+    cashCoverOfNextYearDebt: debtYear1 !== null && cashNow !== null && debtYear1 > 0
+      ? Number((cashNow / debtYear1).toFixed(3))
+      : null,
+  };
+
+  return { entity, label, sector, asOf: slice.asOf, metrics, obligations, inputs, hasPrice };
 }

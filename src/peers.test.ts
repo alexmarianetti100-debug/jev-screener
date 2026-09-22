@@ -17,7 +17,7 @@ function row(symbol: string, sector: string, metrics: Partial<Record<DerivedMetr
   for (const [metric, value] of Object.entries(metrics)) {
     built[metric as DerivedMetric] = derive(value as number, metric, [seed]);
   }
-  return { entity, label: symbol, sector, asOf: ASOF, metrics: built, inputs: [seed], hasPrice: false };
+  return { entity, label: symbol, sector, asOf: ASOF, metrics: built, obligations: {}, inputs: [seed], hasPrice: false };
 }
 
 test("quartiles interpolate across the values present", () => {

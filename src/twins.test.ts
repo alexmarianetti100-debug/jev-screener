@@ -16,7 +16,7 @@ const row = (metrics: Partial<Record<DerivedMetric, number>>): MetricRow => {
   }
   return {
     entity: cik(1), label: "ACME", sector: "retail", asOf: isoDate("2026-09-22"),
-    metrics: built, inputs: [seed], hasPrice: true,
+    metrics: built, obligations: {}, inputs: [seed], hasPrice: true,
   };
 };
 

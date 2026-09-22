@@ -165,6 +165,9 @@ export function buildJudgmentState(
     company: { ticker: row.label, sector: row.sector },
     asOf: row.asOf,
     metrics: wireMetrics(row),
+    // The only figures here that point forwards on a schedule the filer committed to.
+    // Absent is normal and informative: most filers publish no RPO.
+    datedObligations: row.obligations,
     valuation: row.hasPrice ? "Multiples included in metrics above." : "No price data available; multiples are absent.",
     peers: wirePeers(peer),
     filing: filing

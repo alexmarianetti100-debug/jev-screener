@@ -15,7 +15,7 @@ const obs = (knownAt: string, metric = "revenue"): Observation =>
 
 const rowWith = (...knownAts: string[]): MetricRow => ({
   entity: ACME, label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
-  metrics: {}, inputs: knownAts.map((k) => obs(k)), hasPrice: false,
+  metrics: {}, obligations: {}, inputs: knownAts.map((k) => obs(k)), hasPrice: false,
 });
 
 test("vintage is the newest knownAt across all inputs", () => {
@@ -26,7 +26,7 @@ test("vintage is the newest knownAt across all inputs", () => {
 test("a row with no inputs falls back to the slice date", () => {
   const empty: MetricRow = {
     entity: ACME, label: "ACME", sector: "retail", asOf: isoDate("2026-09-01"),
-    metrics: {}, inputs: [], hasPrice: false,
+    metrics: {}, obligations: {}, inputs: [], hasPrice: false,
   };
   assert.equal(rowVintage(empty), "2026-09-01");
 });

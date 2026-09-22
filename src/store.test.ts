@@ -229,3 +229,21 @@ test("compacting a table with nothing to fold changes nothing", async () => {
     assert.equal(await store.observationCount(), 1);
   });
 });
+
+test("observed periods report what is already on file, so it is not written twice", async () => {
+  await withStore(async (store) => {
+    const close = (day: string, value: number) => observation({
+      value, metric: "close", entity: ACME, validAt: isoDate(day), knownAt: isoDate(day),
+      source: "polygon", reliability: "market" as const,
+    });
+    await store.appendObservations([close("2026-09-21", 10), close("2026-09-18", 9)]);
+
+    const days = await store.observedPeriods("close");
+    assert.equal(days.size, 2);
+    assert.ok(days.has(isoDate("2026-09-21")));
+    assert.ok(days.has(isoDate("2026-09-18")));
+    assert.equal(days.has(isoDate("2026-09-17")), false, "a day not stored is not claimed");
+
+    assert.equal((await store.observedPeriods("revenue")).size, 0, "metrics do not bleed into each other");
+  });
+});

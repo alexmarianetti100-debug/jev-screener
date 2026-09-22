@@ -92,6 +92,9 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const profiles = await options.store.loadFilers();
     const priceObservations = await refreshPrices(
       options.store, options.prices ?? createPriceClient(), profiles, log);
+    log(priceObservations > 0
+      ? `  ${priceObservations} new price points`
+      : "  no new price points — every day requested was already on file");
     return { filers: profiles.length, observations: 0, priceObservations, skipped: 0 };
   }
 
@@ -193,11 +196,17 @@ export interface PriceIngestReport {
 export function entityIndex(profiles: readonly FilerProfile[]): Map<Ticker, Entity> {
   const index = new Map<Ticker, Entity>();
   for (const profile of profiles) {
-    for (const symbol of profile.tickers) {
-      // First writer wins, so a symbol two filers claim resolves the same way here as
-      // it does in resolveTickers rather than depending on iteration order.
-      if (!index.has(symbol)) index.set(symbol, profile.entity);
-    }
+    // Only the primary symbol. A filer can list dozens of securities — share classes,
+    // preferreds, warrants — and mapping all of them here put every one of their
+    // closes on the same CIK: one filer had 45 closes a day spanning $2.62 to
+    // $172.60, which made its price, and so its P/E, arbitrary. The common share is
+    // the reference price. Every other symbol still *resolves* to this filer through
+    // resolveTickers; it just does not get to claim to be its price.
+    const primary = profile.tickers[0];
+    if (!primary) continue;
+    // First writer wins, so a symbol two filers claim resolves the same way here as
+    // it does in resolveTickers rather than depending on iteration order.
+    if (!index.has(primary)) index.set(primary, profile.entity);
   }
   return index;
 }
@@ -222,7 +231,13 @@ export async function ingestPrices(
   let failed = 0;
   let consecutiveFailures = 0;
 
+  // Days already on file are skipped outright. Their closes cannot change, and every
+  // screen run calls this — without the check the same facts were appended once per
+  // run, which had put eight copies of each close in the table.
+  const already = await store.observedPeriods(PRICE_METRIC);
+
   for (const day of days) {
+    if (already.has(day)) continue;
     attempted++;
     try {
       const closes = await prices.dailyCloses(day);
@@ -721,9 +736,13 @@ async function main(): Promise<void> {
       const report = await runIngest({
         store, pricesAll: flags.has("prices-all"), pricesOnly: flags.has("prices-only"), log,
       });
-      console.log(`\ningested ${report.observations} observations for ${report.filers} filers` +
-        (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
-        `\n${report.skipped} companyfacts entries skipped (no ticker)\n`);
+      // A prices-only run never reads the archives, so reporting archive counters
+      // for it says "0 skipped" about work that never happened.
+      console.log(flags.has("prices-only")
+        ? `\n${report.priceObservations} new price points across ${report.filers} filers\n`
+        : `\ningested ${report.observations} observations for ${report.filers} filers` +
+          (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
+          `\n${report.skipped} companyfacts entries skipped (no submissions record)\n`);
       return;
     }
 

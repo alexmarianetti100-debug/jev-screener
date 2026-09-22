@@ -354,11 +354,10 @@ test("a second run with no new filings is served from cache", async () => {
     const report = await runScreen({ store, prices: secondPrices });
 
     assert.equal(second.calls.length, 0, "no jev call was made on the second run");
-    // Closes ARE consulted again, because whether a multiple exists is part of the
-    // cache key and cannot be known without asking. That is cheap by construction:
-    // the real client serves a completed trading day from disk, so a same-day rerun
-    // makes no network request. What must stay zero is jev calls and filing fetches.
-    assert.equal(secondPrices.calls.length, PRICE_BACKFILL_DAYS, "closes re-read, from cache in practice");
+    // Nothing is fetched: a day already in the store is skipped outright, because a
+    // completed trading day's closes cannot change. Before that check existed, every
+    // run re-appended the same closes and the table held eight copies of each.
+    assert.deepEqual(secondPrices.calls, [], "no price day was fetched twice");
     assert.equal(report.usage.inputTokens, 0, "a cached run costs no tokens");
     assert.deepEqual(report.picks.map((p) => p.label), ["GOOD"], "same answer from cache");
     assert.ok(report.cache.hits >= 3, "every judgment came from cache");
@@ -574,4 +573,30 @@ test("an expected horizon band reads as a period, and keeps its precision", asyn
   // Out of range cannot happen from a five-level rubric, but must not throw if it does.
   assert.equal(horizonLabel(-1), "within a quarter");
   assert.equal(horizonLabel(99), "3+ years");
+});
+
+test("only a filer's primary symbol carries its price", async () => {
+  const { entityIndex } = await import("./cli.ts");
+
+  // Bank of Montreal's real shape: the common share, then dozens of ETNs it issues.
+  // Mapping all of them put 45 closes a day on one CIK, spanning $2.62 to $172.60.
+  const bmo = {
+    entity: cik(927971), cik: cik(927971),
+    tickers: [ticker("BMO"), ticker("BULZ"), ticker("BNKD"), ticker("BERZ")],
+    name: "BANK OF MONTREAL", sic: "6022", sector: "finance & real estate", filings: [],
+  };
+
+  const index = entityIndex([bmo]);
+  assert.equal(index.size, 1, "one symbol, so one close a day");
+  assert.equal(index.get(ticker("BMO")), cik(927971));
+  assert.equal(index.get(ticker("BULZ")), undefined, "an issued ETN is not the issuer's price");
+});
+
+test("a filer with no symbol at all is simply not priced", async () => {
+  const { entityIndex } = await import("./cli.ts");
+  const exxon = {
+    entity: cik(34088), cik: cik(34088), tickers: [],
+    name: "EXXON MOBIL CORP", sic: "2911", sector: "manufacturing", filings: [],
+  };
+  assert.equal(entityIndex([exxon]).size, 0);
 });

@@ -109,6 +109,14 @@ export interface Store {
   sliceAsOf(asOf: ISODate, options?: { metrics?: readonly string[]; entities?: readonly Entity[] }): Promise<ObservationSlice>;
   observationCount(): Promise<number>;
   /**
+   * Which periods of a metric are already on file.
+   *
+   * A completed trading day's closes are immutable, so "already stored" is a complete
+   * answer and re-appending them only duplicates. Append-only means a restatement is
+   * a new row; it does not mean writing the same fact once per run.
+   */
+  observedPeriods(metric: string): Promise<Set<ISODate>>;
+  /**
    * Drop rows that repeat a fact already stored, and report how many went.
    *
    * Append-only means a restatement is a new row, never an overwrite — it does not
@@ -298,6 +306,12 @@ export async function openStore(path: string = DB_PATH): Promise<Store> {
     async observationCount() {
       const reader = await connection.runAndReadAll("SELECT count(*) AS n FROM observations");
       return asNumber(reader.getRowObjectsJS()[0]?.["n"]);
+    },
+
+    async observedPeriods(metric) {
+      const reader = await connection.runAndReadAll(
+        "SELECT DISTINCT valid_at FROM observations WHERE metric = $1", [metric]);
+      return new Set(reader.getRows().map((row) => isoDate(asString(row[0]))));
     },
 
     async compact() {

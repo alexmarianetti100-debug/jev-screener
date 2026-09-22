@@ -236,10 +236,10 @@ test("screen_run returns jev's picks with full distributions", async () => {
     assert.equal((pick["verdict"] as { choice: string }).choice, "include");
     // The full probability distribution travels with the answer, not just the argmax.
     assert.ok((pick["verdict"] as { probabilities: Record<string, number> }).probabilities["watch"]);
-    assert.equal(pick["fromCache"], true, "served from the judgment cache");
-
     assert.match(String(result["disclaimer"]), /Not a recommendation/);
     assert.equal(result["contaminated"], false);
+    assert.ok(result["runId"], "the answer names the run it came from");
+    assert.ok(((result["counts"] as Record<string, number>)["included"] ?? 0) >= 1);
   } finally {
     await close();
   }
@@ -262,20 +262,34 @@ test("screen_run's limit truncates output without changing selection", async () 
   }
 });
 
-test("screen_run refuses a stale asOf and explains why", async () => {
+test("screen_run serves a past run rather than judging at a past date", async () => {
   const { client, close } = await connected();
   try {
+    // The contamination rule governs *judging* with hindsight. Reading back what was
+    // believed on an earlier date is the opposite of that — it is the record this
+    // system keeps precisely so a forward-only scorecard is possible. A date with no
+    // run behind it is simply missing, and says so.
     const result = await client.callTool({ name: "screen_run", arguments: { asOf: "2024-01-15" } });
 
     assert.equal((result as { isError?: boolean }).isError, true);
     const text = (result as { content: { text: string }[] }).content[0]!.text;
-    assert.match(text, /hindsight, not skill/);
+    assert.match(text, /No screen has been run/);
+    assert.match(text, /batch job/, "and says where a sweep belongs");
+  } finally {
+    await close();
+  }
+});
 
-    const forced = parse(await client.callTool({
-      name: "screen_run", arguments: { asOf: "2024-01-15", allowContaminated: true },
-    }));
-    assert.equal(forced["contaminated"], true);
-    assert.match(String(forced["notice"]), /CONTAMINATED/);
+test("screen_run cannot start a sweep, however it is called", async () => {
+  const { client, close } = await connected();
+  try {
+    // A chat message must not be able to trigger ~4,000 jev calls. The tool reads the
+    // persisted run and nothing else, so an empty judgment cache changes nothing here.
+    const before = parse(await client.callTool({ name: "screen_run", arguments: {} }));
+    const after = parse(await client.callTool({ name: "screen_run", arguments: {} }));
+
+    assert.equal(before["runId"], after["runId"], "the same persisted run, not a new one");
+    assert.equal(before["usage"], undefined, "no tokens are attributed, because none were spent");
   } finally {
     await close();
   }

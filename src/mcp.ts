@@ -13,7 +13,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { DEFAULT_SCREEN_LIMIT } from "./constants.ts";
+import { DEFAULT_SCREEN_LIMIT, EXPLAIN_PERIODS_PER_METRIC } from "./constants.ts";
 import { coverageStatus, explainPick, runScreen } from "./cli.ts";
 import { isoDate, todayISO, type ISODate, type Ticker } from "./observation.ts";
 import { openStore, type Store } from "./store.ts";
@@ -28,10 +28,9 @@ const TOOLS = [
   {
     name: "screen_run",
     description:
-      "jev's current picks, in jev's order. Returns included companies with the full verdict " +
-      "distribution, attractiveness score, and the provenance of every input number. Reads the " +
-      "judgment cache; does not trigger a sweep. `limit` truncates the output only — it is " +
-      "presentation, never selection.",
+      "The picks from the most recent completed screen, in jev's order, with each answer's full " +
+      "probability distribution. Reads the persisted run; it cannot start a sweep — that is a CLI " +
+      "batch job. `limit` truncates the output only — presentation, never selection.",
     inputSchema: {
       type: "object",
       properties: {
@@ -101,29 +100,52 @@ export function createMcpServer(store: Store): Server {
     try {
       switch (request.params.name) {
         case "screen_run": {
-          const rawTickers = Array.isArray(args["tickers"]) ? (args["tickers"] as string[]) : undefined;
-          const report = await runScreen({
-            store,
-            asOf: readAsOf(args),
-            allowContaminated: args["allowContaminated"] === true,
-            limit: typeof args["limit"] === "number" ? args["limit"] : DEFAULT_SCREEN_LIMIT,
-            ...(rawTickers?.length ? { tickers: rawTickers.map((t) => t.toUpperCase() as Ticker) } : {}),
-            ...(typeof args["sector"] === "string" ? { sector: args["sector"] } : {}),
-          });
+          // Serves the last completed screen. It deliberately cannot start one: a
+          // sweep judges ~4,000 companies, costs real money and takes a quarter of
+          // an hour, and a chat message should not be able to trigger that. It also
+          // could not, in practice — the first live probe of this tool timed out at
+          // 60 seconds recomputing a fully cached run.
+          const last = await store.latestRun(readAsOf(args));
+          if (!last) {
+            return failure(
+              "No screen has been run yet. Run `npm run screen` from the CLI — a sweep is a batch " +
+                "job, not something a conversation should start.",
+            );
+          }
+
+          const payload = last.payload as {
+            picks?: readonly {
+              label: string; entity: string; sector: string;
+              attractiveness: unknown; verdict: unknown;
+              answers: Record<string, unknown>;
+            }[];
+            considered?: number; eligible?: number; judged?: number;
+            stamp?: { notice?: string };
+            usage?: unknown;
+          };
+          const all = payload.picks ?? [];
+
+          const wanted = Array.isArray(args["tickers"])
+            ? new Set((args["tickers"] as string[]).map((t) => t.trim().toUpperCase()))
+            : undefined;
+          const sector = typeof args["sector"] === "string" ? args["sector"] : undefined;
+          const matching = all.filter(
+            (pick) => (!wanted || wanted.has(String(pick.label).toUpperCase())) && (!sector || pick.sector === sector),
+          );
+
+          const limit = typeof args["limit"] === "number" ? args["limit"] : DEFAULT_SCREEN_LIMIT;
 
           return json({
-            asOf: report.stamp.asOf,
-            contaminated: report.stamp.contaminated,
-            ...(report.stamp.notice ? { notice: report.stamp.notice } : {}),
-            questionSetVersion: report.questionSetVersion,
+            runId: last.runId,
+            asOf: last.asOf,
+            contaminated: last.contaminated,
+            ...(payload.stamp?.notice ? { notice: payload.stamp.notice } : {}),
+            questionSetVersion: last.questionSetVersion,
             counts: {
-              considered: report.considered, eligible: report.eligible,
-              judged: report.judged,
-              included: report.picks.length,
+              considered: payload.considered, eligible: payload.eligible, judged: payload.judged,
+              included: all.length, matching: matching.length, returned: Math.min(matching.length, limit),
             },
-            cache: report.cache,
-            usage: report.usage,
-            picks: report.picks.map((pick) => ({
+            picks: matching.slice(0, limit).map((pick) => ({
               ticker: pick.label,
               cik: pick.entity,
               sector: pick.sector,
@@ -133,18 +155,41 @@ export function createMcpServer(store: Store): Server {
               accountingQuality: pick.answers.accountingQuality,
               dominantRisk: pick.answers.dominantRisk,
               managementCandor: pick.answers.managementCandor,
+              horizonDriver: pick.answers.horizonDriver,
+              horizonBand: pick.answers.horizonBand,
               sufficiency: pick.answers.sufficiency,
-              fromCache: pick.fromCache,
             })),
             disclaimer: "Candidates for human review. Not a recommendation to buy or sell anything.",
-            ...(report.failures.length ? { failures: report.failures.slice(0, 20) } : {}),
           });
         }
 
         case "explain_pick": {
           const ticker = args["ticker"];
           if (typeof ticker !== "string" || ticker.trim() === "") return failure("explain_pick requires a `ticker`.");
-          return json(await explainPick({ store, ticker: ticker.trim().toUpperCase() as Ticker, asOf: readAsOf(args) }));
+          const report = await explainPick({ store, ticker: ticker.trim().toUpperCase() as Ticker, asOf: readAsOf(args) });
+
+          // Apple's full provenance is 503 observations and 138 KB — more than a
+          // conversation can hold, and most of it is a decade of history nobody asked
+          // for. Keep the newest few periods of each metric, which is what makes a
+          // number checkable, and say how many were left behind.
+          const perMetric = new Map<string, number>();
+          const kept: typeof report.observations[number][] = [];
+          for (const row of [...report.observations].sort((a, b) => b.validAt.localeCompare(a.validAt))) {
+            const seen = perMetric.get(row.metric) ?? 0;
+            if (seen >= EXPLAIN_PERIODS_PER_METRIC) continue;
+            perMetric.set(row.metric, seen + 1);
+            kept.push(row);
+          }
+          kept.sort((a, b) => a.metric.localeCompare(b.metric) || a.validAt.localeCompare(b.validAt));
+
+          return json({
+            ...report,
+            observations: kept,
+            observationsOmitted: report.observations.length - kept.length,
+            ...(report.observations.length > kept.length
+              ? { note: `Newest ${EXPLAIN_PERIODS_PER_METRIC} periods per metric. Use the CLI for the full series.` }
+              : {}),
+          });
         }
 
         case "coverage_status":

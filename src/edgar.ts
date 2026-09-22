@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import { open as openFile, mkdir, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -145,9 +146,15 @@ export function createEdgarClient(options: EdgarOptions = {}): EdgarClient {
         }
       };
 
+      const sink = createWriteStream(partial);
       try {
-        await pipeline(Readable.fromWeb(response.body), counter, createWriteStream(partial));
+        await pipeline(Readable.fromWeb(response.body), counter, sink);
       } catch (error) {
+        // The sink may still be opening when the source errors. Unlinking straight
+        // away can lose that race — the open completes afterwards and leaves a stray
+        // `.part` behind — so let the stream settle before removing the file.
+        sink.destroy();
+        await once(sink, "close").catch(() => undefined);
         await unlink(partial).catch(() => undefined);
         throw error;
       }

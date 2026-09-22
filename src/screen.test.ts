@@ -176,6 +176,7 @@ test("the only tunable numbers live in constants.ts, and are operational", async
     "DEFAULT_SCREEN_LIMIT",
     "DOWNLOAD_PROGRESS_INTERVAL_MS",
     "EDGAR_REQUESTS_PER_SECOND",
+    "EXPLAIN_PERIODS_PER_METRIC",
     "FILING_EXCERPT_CHARS",
     "FILING_FETCH_POOL_SIZE",
     "HTTP_TIMEOUT_MS",

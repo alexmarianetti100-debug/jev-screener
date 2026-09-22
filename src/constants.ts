@@ -121,6 +121,14 @@ export const MAX_ANNUAL_REPORT_AGE_MONTHS = 18;
 /** Below this, trend arithmetic (3-year CAGR, margin trend) has nothing to chew on. */
 export const MIN_REVENUE_QUARTERS = 12;
 
+/**
+ * Periods of each metric that `explain_pick` returns over MCP.
+ *
+ * Presentation: it bounds a response so it fits in a conversation, and decides
+ * nothing about any company. The CLI still prints the full series.
+ */
+export const EXPLAIN_PERIODS_PER_METRIC = 6;
+
 // ── Presentation defaults ─────────────────────────────────────────────────────
 
 /** Default `limit` for screen output. Truncates display; never selects. */

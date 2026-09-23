@@ -211,5 +211,5 @@ test("the question set is frozen, and breaking the freeze must be deliberate", a
   //
   // Doing only (3) is how a measurement quietly stops meaning anything.
   assert.equal(questionSetFingerprint(), "577acd7794ca0418", "question set changed — see the comment above");
-  assert.equal(QUESTION_SET_VERSION, "2026-09-22.3+30000", "version must move with the questions");
+  assert.equal(QUESTION_SET_VERSION, "2026-09-22.4+30000", "version must move with the questions");
 });

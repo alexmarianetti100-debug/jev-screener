@@ -48,7 +48,15 @@ import {
 import { buildUniverse, displayLabel, latestFiling, resolveTickers, type FilerProfile } from "./universe.ts";
 
 /** Metrics that exist only once a price has been fetched. */
-const PRICE_METRICS: readonly DerivedMetric[] = ["priceToEarnings", "evToEbit"];
+/**
+ * Metrics that only exist once closes are on file, so their peer distributions have
+ * to be overlaid after the price stage rather than computed with the rest.
+ */
+const PRICE_METRICS: readonly DerivedMetric[] = [
+  "priceToEarnings", "evToEbit",
+  "momentum12m1", "momentum6m", "momentum3m",
+  "priceToMovingAverage200", "drawdownFrom52wHigh", "volatility90d",
+];
 
 // ── Ingest ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +70,8 @@ export interface IngestOptions {
   readonly pricesOnly?: boolean;
   /** Refetch days already on file, for when the ticker map has changed. */
   readonly reprice?: boolean;
+  /** Weekdays of closes to pull. Defaults to the daily refresh window. */
+  readonly days?: number;
   readonly log?: (message: string) => void;
 }
 
@@ -88,9 +98,12 @@ export async function refreshPrices(
   prices: PriceClient,
   profiles: readonly FilerProfile[],
   log: (message: string) => void,
-  options: { readonly reprice?: boolean } = {},
+  options: { readonly reprice?: boolean; readonly days?: number } = {},
 ): Promise<number> {
-  const days = recentDays(todayISO(), PRICE_BACKFILL_DAYS);
+  // A deep backfill is a different job from a daily refresh: ~500 requests at five a
+  // minute, about a hundred minutes, run once. Momentum needs two years of closes and
+  // the daily cadence would take two years to accumulate them.
+  const days = recentDays(todayISO(), options.days ?? PRICE_BACKFILL_DAYS);
   log(`refreshing ${days.length} days of closes…`);
   const stored = (await ingestPrices(store, prices, days, entityIndex(profiles), log, options)).stored;
   if (options.reprice) {
@@ -108,7 +121,10 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
     const profiles = await options.store.loadFilers();
     const priceObservations = await refreshPrices(
       options.store, options.prices ?? createPriceClient(), profiles, log,
-      options.reprice ? { reprice: true } : {});
+      {
+        ...(options.reprice ? { reprice: true } : {}),
+        ...(options.days ? { days: options.days } : {}),
+      });
     log(priceObservations > 0
       ? `  ${priceObservations} new price points`
       : "  no new price points — every day requested was already on file");
@@ -523,6 +539,7 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
     verdict: row.result.answers.verdict.choice,
     attractiveness: row.result.answers.attractiveness.score,
     ...(typeof row.metrics.fcfConversion === "number" ? { fcfConversion: row.metrics.fcfConversion } : {}),
+    ...(typeof row.metrics.momentum12m1 === "number" ? { momentum12m1: row.metrics.momentum12m1 } : {}),
   }));
 
   const report: ScreenReport = {
@@ -978,7 +995,8 @@ jev stock screener
   npm run ingest  [-- --prices-all]
       Backfill from the SEC bulk archives. --prices-all also refreshes closes;
       --prices-only refreshes closes alone, without re-reading the archives;
-      --reprice refetches days already stored, for when the ticker map changed
+      --reprice refetches days already stored, for when the ticker map changed;
+      --days=N pulls N weekdays of closes (default 5; ~500 for two years)
       prices for the whole eligible universe (slow).
 
   npm run screen  [-- --as-of=YYYY-MM-DD] [--ticker=AAPL,MSFT] [--sector=retail]
@@ -1010,6 +1028,7 @@ async function main(): Promise<void> {
       const report = await runIngest({
         store, pricesAll: flags.has("prices-all"), pricesOnly: flags.has("prices-only"),
         reprice: flags.has("reprice"), log,
+        ...(flags.get("days") ? { days: Number(flags.get("days")) } : {}),
       });
       // A prices-only run never reads the archives, so reporting archive counters
       // for it says "0 skipped" about work that never happened.

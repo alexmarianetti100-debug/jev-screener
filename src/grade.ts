@@ -56,6 +56,15 @@ export interface RosterEntry {
   readonly attractiveness: number;
   /** The free baseline's ranking key. Absent when it could not be computed. */
   readonly fcfConversion?: number;
+  /**
+   * The other free baseline: twelve-month momentum, skipping the last month.
+   *
+   * Once jev is shown price behaviour, beating cash conversion stops being enough to
+   * claim anything. Momentum has a documented premium of its own, so a model that
+   * sees it and then outperforms may simply be reproducing it — and without ranking
+   * the same universe by momentum alone there is no way to tell the difference.
+   */
+  readonly momentum12m1?: number;
 }
 
 const addCalendarDays = (day: ISODate, days: number): ISODate => {
@@ -125,6 +134,10 @@ export interface HorizonResult {
   /** The same universe ranked by cash conversion alone, top N by count of included. */
   readonly baseline?: BucketResult;
   readonly baselineSpread?: number;
+  /** The same universe ranked by momentum alone, sized the same way. */
+  readonly momentumBaseline?: BucketResult;
+  /** Included minus momentum-only. Negative means jev added nothing to the trend. */
+  readonly vsMomentum?: number;
   /**
    * The index over the same window.
    *
@@ -251,6 +264,14 @@ export function gradeRun(
       .slice(0, included.length);
     const baselineReturns = returnsFor(ranked);
 
+    // The second free comparison, and the one that matters once price behaviour is in
+    // the state: rank by momentum alone, take as many names as jev included.
+    const byMomentum = run.roster
+      .filter((row) => typeof row.momentum12m1 === "number")
+      .sort((a, b) => (b.momentum12m1 ?? 0) - (a.momentum12m1 ?? 0))
+      .slice(0, included.length);
+    const momentumReturns = returnsFor(byMomentum);
+
     const benchmark = slice.series(BENCHMARK_ENTITY as never, PRICE_METRIC);
     const marketFrom = priceOn(benchmark, run.asOf);
     const marketTo = priceOn(benchmark, end);
@@ -261,6 +282,7 @@ export function gradeRun(
     const includedResult = summarise(includedReturns);
     const excludedResult = summarise(excludedReturns);
     const baselineResult = summarise(baselineReturns);
+    const momentumResult = summarise(momentumReturns);
 
     return {
       horizon: label,
@@ -276,6 +298,10 @@ export function gradeRun(
       ...(baselineResult ? { baseline: baselineResult } : {}),
       ...(baselineResult && excludedResult
         ? { baselineSpread: baselineResult.meanReturn - excludedResult.meanReturn }
+        : {}),
+      ...(momentumResult ? { momentumBaseline: momentumResult } : {}),
+      ...(momentumResult && includedResult
+        ? { vsMomentum: includedResult.meanReturn - momentumResult.meanReturn }
         : {}),
       ...(marketReturn !== undefined ? { market: { symbol: BENCHMARK_SYMBOL, return: marketReturn } } : {}),
       ...(marketReturn !== undefined && includedResult
@@ -296,6 +322,7 @@ export function gradeRun(
       "Overlapping holding periods across runs are autocorrelated; treat repeated cohorts as fewer independent observations than they appear.",
       "Returns are price-only. Dividends are not in this data, which understates high-yield names.",
       "Beating the cash-conversion baseline is the bar that matters. Beating zero is not.",
+      "Since jev is shown price behaviour, beating the momentum-only baseline is the other bar: outperforming while having been handed the trend may be reproducing it rather than adding to it.",
       `Beating ${BENCHMARK_SYMBOL} is the other bar: a positive include-minus-exclude spread can still lose to simply owning the market.`,
       "Delisted names are counted, not dropped. `meanReturn` excludes them and `meanIfDelistedAreTotalLoss` treats each as -100%; the truth is between, and a wide gap means the result turns on names that stopped trading.",
     ],

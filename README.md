@@ -113,7 +113,8 @@ jev is the one that decides what to do about them.
 2. **Eligibility** — derives the universe by the predicates above. No hand-written ticker list.
 3. **Slice** — bind an `asOf` reader; read latest-known values.
 4. **Metrics** — pure arithmetic: growth, margins and their trend, FCF conversion, pre-tax ROIC,
-   net debt/EBITDA, dilution, accrual ratio, working-capital-versus-sales gaps.
+   net debt/EBITDA, dilution, accrual ratio, working-capital-versus-sales gaps, and — where
+   enough closes are on file — momentum, trend and volatility.
 5. **Peer context** — the metric distribution (min/p25/median/p75/max) across the **whole eligible
    universe** and within the company's sector.
 6. **Judgment** — fetch price and filing text, then one jev call per eligible company with the
@@ -261,6 +262,12 @@ Three things it reports, and each exists to stop a specific way of fooling yours
   valuable thing this can tell you.
 - **`pending`, not zero.** A horizon the price history does not reach yet reports the date
   it needs and no number. Horizons are 1m, 3m, 6m, 1y, 2y.
+- **Momentum, beside the picks.** Once jev is shown price behaviour, beating cash
+  conversion stops being enough to claim anything: momentum has a documented premium of
+  its own, and a model handed the trend may simply be reproducing it. So the same universe
+  is also ranked by twelve-month momentum alone, sized to what jev included, and reported
+  as `vsMomentum`. Without that column, a screener that had merely learned to follow the
+  trend would read as skill.
 - **The market, beside the picks.** A cohort that rose 9% is not a result if the index
   rose 10%. `SPY` rides along on the same day files under a reserved CIK no real filer
   can hold, because its issuing trust is not an operating filer and cannot arrive through
@@ -330,9 +337,14 @@ pinned fingerprint.
 | `2026-09-22.2+30000` | `577acd7794ca0418` | — | First frozen set. `verdict` asks about scarcity, the excerpt is 30,000 characters, and the horizon questions are in. |
 | `2026-09-22.3+30000` | `577acd7794ca0418` | Dated obligations added to the state | `horizonBand` was resting on inference alone. Debt and lease maturity schedules and remaining performance obligations are contractual and dated, so the horizon can rest on something the filer committed to. The questions are untouched — the fingerprint is unchanged — but jev sees more, which is the same kind of break. Done deliberately before any forward data existed. **Measurement starts here.** |
 
+| `2026-09-22.4+30000` | `577acd7794ca0418` | Price behaviour added to the state | The screener judged growth potential over a horizon while seeing nothing about price beyond a multiple. Momentum, trend and volatility are pure functions of the closes already on file, so they carry a real `knownAt` and full provenance — unlike an indicator fetched from a charting service, which is computed now on a series since adjusted and cannot be reconstructed for a past date. Questions untouched, fingerprint unchanged, but jev sees more. Taken now, five weeks before the first horizon resolves, which is when a break is cheapest. |
+
 **The first measured cohort is run `a0c105d0`**, judged 2026-09-22 at this epoch: 3,962
-companies, 940 included, a full roster persisted. That is the run `grade` should be read
-against, and the clock starts from it. Earlier runs remain in the table and remain
+companies, 940 included, a full roster persisted. It has been superseded: adding price behaviour
+changed what jev sees, so the cohort `grade` should be read against is the first run at
+`2026-09-22.4+30000`. Superseding a two-dollar run five weeks before any horizon resolves
+is the cheap version of this mistake; discovering the need for it afterwards would not
+have been. Earlier runs remain in the table and remain
 readable, but they answered questions the screener no longer asks, and pooling them with
 what follows would be the exact drift the freeze exists to prevent.
 

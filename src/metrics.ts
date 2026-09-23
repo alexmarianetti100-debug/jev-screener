@@ -21,6 +21,8 @@ export const DERIVED_METRICS = [
   "shareCountChange1y", "accrualRatio",
   "receivablesGrowthVsRevenue", "inventoryGrowthVsRevenue",
   "priceToEarnings", "evToEbit",
+  "momentum12m1", "momentum6m", "momentum3m",
+  "priceToMovingAverage200", "drawdownFrom52wHigh", "volatility90d",
 ] as const;
 export type DerivedMetric = (typeof DERIVED_METRICS)[number];
 
@@ -62,6 +64,16 @@ const QUARTERS_PER_YEAR = 4;
 const CAGR_YEARS = 3;
 /** Quarters in the CAGR lookback. */
 const CAGR_QUARTERS = QUARTERS_PER_YEAR * CAGR_YEARS;
+
+/**
+ * Trading-day calendar. These define what "a month" means for a price window, in the
+ * same way QUARTERS_PER_YEAR defines what TTM means — they are arithmetic, not a view
+ * about which companies are good, so they live here rather than in constants.ts.
+ */
+const TRADING_DAYS_YEAR = 252;
+const TRADING_DAYS_MONTH = 21;
+const TRADING_DAYS_QUARTER = 63;
+const TRADING_DAYS_200 = 200;
 /** Endpoints of a one-year window: this quarter and the same quarter last year. */
 const YEAR_OVER_YEAR_WINDOW = QUARTERS_PER_YEAR + 1;
 
@@ -250,6 +262,65 @@ export function computeMetrics(slice: ObservationSlice, entity: Entity, sector: 
   const price = latest(PRICE_METRIC);
   const sharesNow = sharesSeries.at(-1);
   const hasPrice = price !== undefined;
+
+  // ── Price behaviour ──
+  //
+  // Computed here from the closes already in the slice rather than taken from a
+  // charting service. An indicator fetched from elsewhere arrives with no defensible
+  // `knownAt` — it is calculated now, on a series that has been adjusted since — and
+  // could not be reconstructed for a past as-of date. These can, because they are a
+  // pure function of observations that each carry the day they became knowable.
+  //
+  // Positional offsets, in trading days: the series is dense and daily, so the 21st
+  // entry back is about a month and the 252nd about a year. A company with too short
+  // a history simply has no momentum, which is the correct answer rather than a
+  // number derived from three weeks of data.
+  const closes = series(PRICE_METRIC);
+  const at = (back: number): Observation | undefined =>
+    back < closes.length ? closes[closes.length - 1 - back] : undefined;
+
+  const priceReturn = (from: number, to = 0): number | undefined => {
+    const start = at(from);
+    const end = at(to);
+    return start && end && start.value > 0 ? end.value / start.value - 1 : undefined;
+  };
+
+  // Skipping the most recent month is the canonical construction: the last few weeks
+  // carry short-term reversal that runs against the twelve-month effect.
+  put("momentum12m1", priceReturn(TRADING_DAYS_YEAR + TRADING_DAYS_MONTH, TRADING_DAYS_MONTH),
+    [at(TRADING_DAYS_YEAR + TRADING_DAYS_MONTH), at(TRADING_DAYS_MONTH)].flatMap((o) => (o ? [o] : [])));
+  put("momentum6m", priceReturn(TRADING_DAYS_MONTH * 6),
+    [at(TRADING_DAYS_MONTH * 6), at(0)].flatMap((o) => (o ? [o] : [])));
+  put("momentum3m", priceReturn(TRADING_DAYS_MONTH * 3),
+    [at(TRADING_DAYS_MONTH * 3), at(0)].flatMap((o) => (o ? [o] : [])));
+
+  if (closes.length >= TRADING_DAYS_200) {
+    const window = closes.slice(-TRADING_DAYS_200);
+    const average = window.reduce((total, o) => total + o.value, 0) / window.length;
+    put("priceToMovingAverage200", safeRatio(closes.at(-1)!.value, average), window.slice(-2));
+  }
+
+  if (closes.length >= TRADING_DAYS_YEAR) {
+    const year = closes.slice(-TRADING_DAYS_YEAR);
+    const high = Math.max(...year.map((o) => o.value));
+    // Negative or zero: a company at its high is not "up" from it.
+    put("drawdownFrom52wHigh", high > 0 ? closes.at(-1)!.value / high - 1 : undefined, year.slice(-2));
+  }
+
+  if (closes.length > TRADING_DAYS_QUARTER) {
+    const window = closes.slice(-(TRADING_DAYS_QUARTER + 1));
+    const daily: number[] = [];
+    for (let i = 1; i < window.length; i++) {
+      const prev = window[i - 1]!.value;
+      if (prev > 0) daily.push(window[i]!.value / prev - 1);
+    }
+    if (daily.length > 1) {
+      const mean = daily.reduce((a, b) => a + b, 0) / daily.length;
+      const variance = daily.reduce((total, r) => total + (r - mean) ** 2, 0) / (daily.length - 1);
+      // Annualised, so it reads on the same scale as the returns beside it.
+      put("volatility90d", Math.sqrt(variance * TRADING_DAYS_YEAR), window.slice(-2));
+    }
+  }
 
   if (price && sharesNow) {
     const marketCap = price.value * sharesNow.value;

@@ -95,6 +95,14 @@ inference. Coverage on the live universe: 5,466 filers publish next-year debt ma
 6,665 a lease schedule, 1,739 an RPO. Absent is the common case and is sent as null
 rather than omitted, because "no maturity schedule published" is itself a fact.
 
+**Price behaviour.** Momentum over twelve months skipping the last, six and three;
+distance from the 200-day average; drawdown from the 52-week high; annualised volatility.
+All computed from closes already in the store rather than taken from a charting service —
+an indicator fetched from elsewhere arrives with no defensible `knownAt`, having been
+calculated now on a series since adjusted, and could not be reconstructed for a past
+as-of date. These can, because they are pure functions of observations that each carry
+the day they became knowable.
+
 **Peer context.** Distributions across the whole eligible universe and within the
 company's sector, computed once and passed identically to every call — because
 `attractiveness` scores are only comparable if every call saw the same yardstick.
@@ -386,9 +394,12 @@ problems directly, and that is unmeasured.
 
 The scorecard is built to answer these honestly when it can. It reports the spread
 between what was included and what was passed over — a bucket of picks going up says
-nothing on its own, because the market goes up. It grades a free deterministic baseline
-alongside, because if the model cannot beat ranking by cash conversion, the judgment
-layer is decoration. It compares against the index, because a cohort that rose 9% is not
+nothing on its own, because the market goes up. It grades two free deterministic baselines alongside —
+cash conversion, and twelve-month momentum. The second exists because once the model is
+shown price behaviour, beating the first stops being enough: momentum carries its own
+documented premium, and a model handed the trend may be reproducing it rather than adding
+to it. Without that comparison, a screener that had merely learned to follow the trend
+would be indistinguishable from one that worked. It compares against the index, because a cohort that rose 9% is not
 a result if the market rose 10%. It counts delisted names rather than dropping them, and
 reports both bounds since bankruptcy and acquisition both end a price series in opposite
 directions. And it says `pending` rather than zero.

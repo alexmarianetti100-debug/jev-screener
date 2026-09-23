@@ -174,3 +174,76 @@ test("a coverage ratio is not invented when its denominator is missing", () => {
   assert.equal(row.obligations["cashCoverOfNextYearDebt"], null);
   assert.equal(row.obligations["yearsOfRevenueContracted"], null);
 });
+
+// ── Price behaviour ───────────────────────────────────────────────────────────
+
+/** `n` daily closes ending today, newest last, from a generator over the index. */
+const closes = (n: number, priceAt: (i: number) => number): Observation[] =>
+  Array.from({ length: n }, (_, i) => {
+    const day = new Date(Date.UTC(2024, 0, 2));
+    day.setUTCDate(day.getUTCDate() + i);
+    const iso = isoDate(day.toISOString());
+    return observation({
+      value: priceAt(i), metric: "close", entity: ACME,
+      validAt: iso, knownAt: iso, source: "polygon", reliability: "market",
+    });
+  });
+
+const priced = (rows: Observation[]) =>
+  computeMetrics(buildSlice([...flow("revenue", [10, 10, 10, 10]), ...rows], isoDate("2026-12-31")), ACME, "services", "ACME");
+
+test("momentum skips the most recent month, because reversal runs against it", () => {
+  // Flat for a year, then a sharp spike only in the final month. Twelve-month
+  // momentum must not see the spike; three-month momentum must.
+  const row = priced(closes(300, (i) => (i < 279 ? 100 : 200)));
+
+  assert.equal(row.metrics.momentum12m1?.value, 0, "the spike is inside the skipped month");
+  assert.ok((row.metrics.momentum3m?.value ?? 0) > 0.9, "but three-month momentum sees it");
+});
+
+test("a company without enough history has no momentum, rather than a made-up one", () => {
+  const row = priced(closes(30, () => 100));
+
+  assert.equal(row.metrics.momentum12m1, undefined, "three weeks is not a year");
+  assert.equal(row.metrics.momentum6m, undefined);
+  assert.equal(row.metrics.drawdownFrom52wHigh, undefined);
+  assert.equal(row.metrics.priceToMovingAverage200, undefined);
+});
+
+test("drawdown is measured from the high and is never positive", () => {
+  // Rises to 200, ends at 150: a quarter below the high.
+  const row = priced(closes(300, (i) => (i < 150 ? 100 + i * 0.67 : 150)));
+  const drawdown = row.metrics.drawdownFrom52wHigh?.value;
+
+  assert.ok(drawdown !== undefined);
+  assert.ok(drawdown < 0, "below the high");
+  // A company sitting at its own high is flat, not up from it.
+  assert.equal(priced(closes(300, (i) => 100 + i)).metrics.drawdownFrom52wHigh?.value, 0);
+});
+
+test("the 200-day average distinguishes trending from recovering", () => {
+  const above = priced(closes(300, (i) => 100 + i)).metrics.priceToMovingAverage200?.value ?? 0;
+  const below = priced(closes(300, (i) => 400 - i)).metrics.priceToMovingAverage200?.value ?? 0;
+
+  assert.ok(above > 1, "rising: price above its average");
+  assert.ok(below < 1, "falling: price below it");
+});
+
+test("volatility is annualised, so it reads beside the returns", () => {
+  const calm = priced(closes(300, () => 100)).metrics.volatility90d?.value ?? -1;
+  const choppy = priced(closes(300, (i) => (i % 2 === 0 ? 100 : 130))).metrics.volatility90d?.value ?? 0;
+
+  assert.equal(calm, 0, "a flat line has no volatility");
+  assert.ok(choppy > 1, "a 30% daily swing annualises to something large");
+});
+
+test("price facts carry provenance like every other number", () => {
+  const row = priced(closes(300, (i) => 100 + i));
+  const momentum = row.metrics.momentum12m1;
+
+  assert.ok(momentum);
+  // The point of computing these here rather than fetching them: a knownAt that can
+  // be defended, and inputs that can be pointed at.
+  assert.ok(momentum.knownAt, "knowable on a date");
+  assert.equal(momentum.reliability, "market");
+});

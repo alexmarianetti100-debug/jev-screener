@@ -244,3 +244,56 @@ test("no benchmark data means no market claim, not a zero", () => {
   assert.equal(oneMonth.market, undefined);
   assert.equal(oneMonth.vsMarket, undefined);
 });
+
+// ── The momentum baseline ─────────────────────────────────────────────────────
+
+test("a model handed the trend is measured against the trend alone", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const GAMMA = cik(3);
+  const rows = [
+    close(String(ACME),  "2026-09-21", 100), close(String(ACME),  end, 112), // jev's pick:      +12%
+    close(String(BETA),  "2026-09-21", 100), close(String(BETA),  end, 102), // passed over:      +2%
+    close(String(GAMMA), "2026-09-21", 100), close(String(GAMMA), end, 120), // passed over:     +20%
+  ];
+
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [
+      { entity: String(ACME),  label: "ACME",  sector: "retail", verdict: "include", attractiveness: 3.9, momentum12m1: 0.10 },
+      { entity: String(BETA),  label: "BETA",  sector: "retail", verdict: "exclude", attractiveness: 1.0, momentum12m1: 0.05 },
+      { entity: String(GAMMA), label: "GAMMA", sector: "retail", verdict: "exclude", attractiveness: 1.2, momentum12m1: 0.90 },
+    ],
+  }, buildSlice(rows, TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+
+  // +12% against the +11% average of what it passed over: a win on the old measure.
+  assert.ok(oneMonth.spread! > 0, "it beat what it passed over");
+
+  // But ranking on momentum alone would have taken GAMMA and made +20%. This is the
+  // case the column exists for: without it, the line above reads as skill.
+  assert.equal(oneMonth.momentumBaseline?.n, 1, "sized to what jev included");
+  assert.ok(Math.abs(oneMonth.momentumBaseline!.meanReturn - 0.2) < 1e-9, "the baseline took the high-momentum name");
+  assert.ok(Math.abs(oneMonth.vsMomentum! - -0.08) < 1e-9, "and jev trailed it by eight points");
+});
+
+test("no momentum on the roster means no momentum claim", () => {
+  const end = horizonEnd(isoDate("2026-09-21"), 21);
+  const report = gradeRun({
+    runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1",
+    roster: [{ entity: String(ACME), label: "ACME", sector: "retail", verdict: "include", attractiveness: 3.9 }],
+  }, buildSlice([close(String(ACME), "2026-09-21", 100), close(String(ACME), end, 110)], TODAY), TODAY);
+
+  const oneMonth = report.horizons.find((h) => h.horizon === "1m")!;
+  assert.equal(oneMonth.momentumBaseline, undefined);
+  assert.equal(oneMonth.vsMomentum, undefined);
+});
+
+test("the caveats say why beating the market is no longer enough", () => {
+  const report = gradeRun(
+    { runId: "r1", asOf: isoDate("2026-09-21"), questionSetVersion: "v1", roster: roster("include") },
+    buildSlice([], TODAY), TODAY,
+  );
+  assert.ok(report.caveats.some((c) => /momentum-only baseline/.test(c)));
+  assert.ok(report.caveats.some((c) => /reproducing it rather than adding to it/.test(c)));
+});

@@ -30,7 +30,10 @@ import {
   type CIK, type Entity, type ISODate, type Observation, type Ticker,
 } from "./observation.ts";
 import { buildPeerTables, overlayDistributions, peerContextFor, type PeerTables } from "./peers.ts";
-import { closesToObservations, createPriceClient, hasPolygonKey, recentDays, type PriceClient } from "./prices.ts";
+import {
+  closesToObservations, createPriceClient, earlierDay, hasPolygonKey, lastPossibleCloseDay,
+  recentDays, type PriceClient,
+} from "./prices.ts";
 import { runPool } from "./pool.ts";
 import {
   askJudgment, assemble, assertRunnable,
@@ -80,6 +83,12 @@ export interface IngestReport {
   readonly observations: number;
   readonly priceObservations: number;
   readonly skipped: number;
+  /**
+   * How the price leg went, day by day. `priceObservations` alone cannot tell a run
+   * that had nothing to fetch from a run where every fetch was rejected: both store
+   * zero. The caller needs the difference to set an exit status.
+   */
+  readonly priceDays: PriceIngestReport;
 }
 
 /**
@@ -99,18 +108,18 @@ export async function refreshPrices(
   profiles: readonly FilerProfile[],
   log: (message: string) => void,
   options: { readonly reprice?: boolean; readonly days?: number } = {},
-): Promise<number> {
+): Promise<PriceIngestReport> {
   // A deep backfill is a different job from a daily refresh: ~500 requests at five a
   // minute, about a hundred minutes, run once. Momentum needs two years of closes and
   // the daily cadence would take two years to accumulate them.
-  const days = recentDays(todayISO(), options.days ?? PRICE_BACKFILL_DAYS);
+  const days = recentDays(lastPossibleCloseDay(), options.days ?? PRICE_BACKFILL_DAYS);
   log(`refreshing ${days.length} days of closes…`);
-  const stored = (await ingestPrices(store, prices, days, entityIndex(profiles), log, options)).stored;
+  const report = await ingestPrices(store, prices, days, entityIndex(profiles), log, options);
   if (options.reprice) {
     const removed = await store.compact();
     if (removed > 0) log(`  compacted ${removed} rows already on file`);
   }
-  return stored;
+  return report;
 }
 
 export async function runIngest(options: IngestOptions): Promise<IngestReport> {
@@ -119,16 +128,16 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   if (options.pricesOnly) {
     const log = options.log ?? (() => {});
     const profiles = await options.store.loadFilers();
-    const priceObservations = await refreshPrices(
+    const priceDays = await refreshPrices(
       options.store, options.prices ?? createPriceClient(), profiles, log,
       {
         ...(options.reprice ? { reprice: true } : {}),
         ...(options.days ? { days: options.days } : {}),
       });
-    log(priceObservations > 0
-      ? `  ${priceObservations} new price points`
-      : "  no new price points — every day requested was already on file");
-    return { filers: profiles.length, observations: 0, priceObservations, skipped: 0 };
+    log(describePriceRefresh(priceDays));
+    return {
+      filers: profiles.length, observations: 0, priceObservations: priceDays.stored, skipped: 0, priceDays,
+    };
   }
 
   const log = options.log ?? (() => {});
@@ -203,11 +212,15 @@ export async function runIngest(options: IngestOptions): Promise<IngestReport> {
   const removed = await options.store.compact();
   if (removed > 0) log(`  compacted ${removed} rows already on file`);
 
-  const priceObservations = options.pricesAll
-    ? await refreshPrices(options.store, options.prices ?? createPriceClient(), profiles, log)
-    : 0;
+  let priceDays = NO_PRICE_DAYS;
+  if (options.pricesAll) {
+    priceDays = await refreshPrices(options.store, options.prices ?? createPriceClient(), profiles, log);
+    log(describePriceRefresh(priceDays));
+  }
 
-  return { filers: profiles.length, observations, priceObservations, skipped };
+  return {
+    filers: profiles.length, observations, priceObservations: priceDays.stored, skipped, priceDays,
+  };
 }
 
 export interface PriceIngestReport {
@@ -216,6 +229,49 @@ export interface PriceIngestReport {
   readonly failed: number;
   /** True when the run gave up on the source rather than finishing the list. */
   readonly abandoned: boolean;
+}
+
+/** No day was asked for: no key configured, or the archives were read without prices. */
+export const NO_PRICE_DAYS: PriceIngestReport = { stored: 0, attempted: 0, failed: 0, abandoned: false };
+
+/**
+ * True when the price leg asked for days and got nothing but errors.
+ *
+ * Not the same as storing nothing. A holiday stores nothing, and so does the ordinary
+ * case where every day was already on file — neither is a fault. Asking and being
+ * refused every time is.
+ */
+export function priceLegFailed(report: PriceIngestReport): boolean {
+  return report.abandoned || (report.attempted > 0 && report.failed === report.attempted);
+}
+
+/**
+ * One line saying what the price leg actually did.
+ *
+ * The distinction worth drawing is between nothing to do and nothing working. A daily
+ * refresh asks for five days and the breaker only trips at twenty consecutive
+ * failures, so a run in which every single request was rejected can never reach it —
+ * and reported "already on file" and exited 0 regardless. A revoked key read exactly
+ * like a quiet Tuesday, in a pipeline where a close missed past the source's two-year
+ * reach is a close that never arrives.
+ */
+export function describePriceRefresh(report: PriceIngestReport): string {
+  const { stored, attempted, failed } = report;
+
+  if (report.abandoned) {
+    return `  price source gave up after ${failed} consecutive failures — ` +
+      `${attempted} of the days requested attempted, ${stored} new price points`;
+  }
+  // Nothing was attempted because nothing needed to be: the steady state.
+  if (attempted === 0) return "  no new price points — every day requested was already on file";
+  if (failed === attempted) {
+    return `  no price points stored — every one of the ${attempted} days requested failed`;
+  }
+
+  const partial = failed > 0 ? ` (${failed} of ${attempted} days failed)` : "";
+  // Attempted, no failures, nothing stored: market holidays, which return no bars.
+  if (stored === 0) return `  no new price points — the ${attempted} days requested returned no closes${partial}`;
+  return `  ${stored} new price points${partial}`;
 }
 
 /**
@@ -409,13 +465,21 @@ export async function runScreen(options: ScreenOptions): Promise<ScreenReport> {
   const priceReport = options.prices || hasPolygonKey()
     ? await ingestPrices(
         store, options.prices ?? createPriceClient(),
-        recentDays(asOf, PRICE_BACKFILL_DAYS), entityIndex(profiles), log)
-    : (log("  POLYGON_API_KEY not set — skipping prices, multiples will be absent"),
-       { stored: 0, attempted: 0, failed: 0, abandoned: false });
+        recentDays(earlierDay(asOf, lastPossibleCloseDay()), PRICE_BACKFILL_DAYS),
+        entityIndex(profiles), log)
+    : (log("  POLYGON_API_KEY not set — skipping prices, multiples will be absent"), NO_PRICE_DAYS);
   if (priceReport.abandoned) {
     failures.push(
       `price source gave up after ${priceReport.failed} failures; ` +
         `${priceReport.attempted} days attempted, valuation multiples absent`,
+    );
+  } else if (priceLegFailed(priceReport)) {
+    // Short of the breaker, so not abandoned — but nothing came back either. Multiples
+    // here rest entirely on closes fetched by some earlier run, which for a screen run
+    // on a stale price table is the difference between current and months old.
+    failures.push(
+      `every one of the ${priceReport.attempted} days of closes requested failed; ` +
+        `multiples rest on whatever was already on file`,
     );
   }
 
@@ -1037,6 +1101,17 @@ async function main(): Promise<void> {
         : `\ningested ${report.observations} observations for ${report.filers} filers` +
           (report.priceObservations ? `, ${report.priceObservations} price points` : "") +
           `\n${report.skipped} companyfacts entries skipped (no submissions record)\n`);
+      // Run unattended from launchd, where a log nobody reads is the only other
+      // output. A price leg that stored nothing because every request was rejected is
+      // a failure and has to exit like one, or a dead source accumulates silently for
+      // as long as it takes someone to notice the closes stopped.
+      if (priceLegFailed(report.priceDays)) {
+        console.error(
+          "every day of closes requested failed — check POLYGON_API_KEY, then " +
+            "`npm run screen -- coverage` for the recorded reason\n",
+        );
+        process.exitCode = 1;
+      }
       return;
     }
 

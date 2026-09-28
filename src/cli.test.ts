@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createClient } from "./client.ts";
-import { coverageStatus, explainPick, ingestPrices, runIngest, runScreen } from "./cli.ts";
+import {
+  coverageStatus, describePriceRefresh, explainPick, ingestPrices, NO_PRICE_DAYS,
+  priceLegFailed, runIngest, runScreen,
+} from "./cli.ts";
 import type { EdgarClient } from "./edgar.ts";
 import { type ISODate, cik, type Entity, isoDate, ticker, type Observation, type Ticker } from "./observation.ts";
 import { PRICE_BACKFILL_DAYS } from "./constants.ts";
@@ -560,6 +563,50 @@ test("an intermittent source is not abandoned — the run is about consecutive f
   } finally {
     await store.close();
   }
+});
+
+test("a daily refresh where every day was rejected is a failure, not a quiet day", async () => {
+  const store = await openStore(":memory:");
+  try {
+    // The shape the breaker cannot catch: five days asked for, twenty consecutive
+    // failures needed to abandon. Every request rejected, and the run still finishes.
+    const days = recentDays(isoDate("2026-09-24"), PRICE_BACKFILL_DAYS);
+    const rejected: PriceClient = {
+      async dailyCloses(): Promise<ReadonlyMap<Ticker, number>> {
+        throw new Error("Polygon rejected the API key (403) — check POLYGON_API_KEY");
+      },
+    };
+
+    const report = await ingestPrices(store, rejected, days, new Map(), () => {});
+
+    assert.equal(report.abandoned, false, "a five-day window can never reach the breaker");
+    assert.equal(report.stored, 0);
+    assert.equal(report.failed, PRICE_BACKFILL_DAYS);
+    assert.equal(priceLegFailed(report), true, "asked five times, refused five times");
+    assert.match(describePriceRefresh(report), /every one of the 5 days requested failed/);
+  } finally {
+    await store.close();
+  }
+});
+
+test("storing nothing because there was nothing to store is not a failure", async () => {
+  // The steady state: every day in the window already on file, so none is attempted.
+  assert.equal(priceLegFailed(NO_PRICE_DAYS), false);
+  assert.match(describePriceRefresh(NO_PRICE_DAYS), /already on file/);
+
+  // A market holiday answers with no bars. Attempted, no failure, nothing stored —
+  // and the old wording called that "already on file", which it is not.
+  const holiday = { stored: 0, attempted: 1, failed: 0, abandoned: false };
+  assert.equal(priceLegFailed(holiday), false);
+  assert.match(describePriceRefresh(holiday), /returned no closes/);
+
+  // Partial failure still stores what it got, and still says what it lost.
+  const partial = { stored: 4000, attempted: 5, failed: 2, abandoned: false };
+  assert.equal(priceLegFailed(partial), false);
+  assert.match(describePriceRefresh(partial), /4000 new price points \(2 of 5 days failed\)/);
+
+  // Abandoned is a failure however many days got through before the breaker tripped.
+  assert.equal(priceLegFailed({ stored: 10, attempted: 25, failed: 20, abandoned: true }), true);
 });
 
 test("an expected horizon band reads as a period, and keeps its precision", async () => {

@@ -35,6 +35,29 @@ export const POLYGON_REQUESTS_PER_MINUTE = 5;
 export const PRICE_BACKFILL_DAYS = 5;
 
 /**
+ * The exchange the closes come from, and the hour its bell rings there.
+ *
+ * Only ever used to decide whether a calendar day can already have a close. The
+ * zone is what matters: a machine on Pacific time asking UTC for "today" after
+ * 17:00 gets tomorrow, and tomorrow has not traded.
+ */
+export const MARKET_TIME_ZONE = "America/New_York";
+export const MARKET_CLOSE_HOUR_ET = 16;
+
+/**
+ * Trading days the price source lags behind the current session.
+ *
+ * A property of the plan, not the clock. Measured: at 18:42 ET, nearly three hours
+ * after the bell, the free tier returned 403 for that day while serving 12,591
+ * results for the previous one. A paid tier would set this to zero.
+ *
+ * Wrong in either direction costs the same rate-limited request and writes the same
+ * misleading "check POLYGON_API_KEY" into the log, so it is worth measuring again if
+ * the plan changes rather than assuming.
+ */
+export const PRICE_PUBLISH_LAG_DAYS = 1;
+
+/**
  * Consecutive price-source failures before this run stops asking.
  *
  * Stooq is a free service with no status page and no bulk endpoint. When it is down,

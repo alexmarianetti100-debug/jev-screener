@@ -297,14 +297,29 @@ fit whatever showed up.
 `grade` needs two things to accumulate: closes to measure against, and cohorts to
 measure. Neither happens on its own.
 
-```sh
-crontab -e
-```
+Two launchd agents in `~/Library/LaunchAgents` run `scripts/refresh.sh`:
 
-```
-30 17 * * 1-5  cd ~/Desktop/codingprojects/jevproject && ./scripts/refresh.sh prices >> data/cron.log 2>&1
-0  9  1 * *    cd ~/Desktop/codingprojects/jevproject && ./scripts/refresh.sh screen >> data/cron.log 2>&1
-```
+| Agent | Runs | Does |
+| --- | --- | --- |
+| `com.jev.prices` | weekdays 17:30 | `refresh.sh prices` |
+| `com.jev.screen` | the 1st, 09:00 | `refresh.sh screen` |
+
+Both log to `data/cron.log`. launchd rather than cron because a Mac asleep at 17:30
+makes cron skip the run, while launchd fires it on wake — and since each price run
+refetches the last five days, a late run fills the gap. Load or reload one with
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jev.prices.plist`; fire it
+by hand with `launchctl kickstart gui/$(id -u)/com.jev.prices`.
+
+Keep the project out of `~/Desktop`, `~/Documents` and `~/Downloads`: macOS privacy
+protection denies background jobs access to those folders, and the run fails with
+"Operation not permitted".
+
+A price run that asked for days and was refused every time **exits 1** and says so, so a
+dead key surfaces as a failed job rather than as a log line nobody reads. Anything else
+exits 0, including the ordinary case where every day was already on file. The window is
+anchored on the last close the Eastern clock can have produced, not on UTC midnight:
+asking for a day that has not traded earns a 403 from the free tier, which is
+indistinguishable from a revoked key.
 
 Weekday closes, and one screen a month. Monthly rather than weekly because a cohort is
 only worth having if enough filings have landed to make it different from the last one,

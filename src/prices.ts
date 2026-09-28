@@ -22,7 +22,10 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CACHE_DIR, HTTP_TIMEOUT_MS, POLYGON_REQUESTS_PER_MINUTE } from "./constants.ts";
+import {
+  CACHE_DIR, HTTP_TIMEOUT_MS, MARKET_CLOSE_HOUR_ET, MARKET_TIME_ZONE,
+  POLYGON_REQUESTS_PER_MINUTE, PRICE_PUBLISH_LAG_DAYS,
+} from "./constants.ts";
 import {
   isoDate, observation, PRICE_METRIC,
   type Entity, type ISODate, type Observation, type Ticker,
@@ -90,6 +93,49 @@ export function parseGroupedBars(body: GroupedResponse): Map<Ticker, number> {
   }
   return closes;
 }
+
+/**
+ * The newest date the price source will actually serve a close for.
+ *
+ * Asking for a day it will not serve is not the harmless empty answer a weekend is:
+ * the free tier returns **403** for a date outside its entitlement, which is the same
+ * status a revoked key returns. So every evening run recorded a source failure, spent
+ * a rate-limited request, and left a "check POLYGON_API_KEY" in the log with nothing
+ * wrong with the key.
+ *
+ * Two separate reasons a day may be unavailable, and conflating them is how the first
+ * fix came up short:
+ *
+ *  1. **The bell has not rung.** UTC caused this — west of the meridian the UTC date
+ *     rolls over while the market is still shut — so the anchor is the *Eastern* date,
+ *     stepped back until the close hour.
+ *  2. **The plan does not cover the current session.** Measured rather than assumed:
+ *     at 18:42 ET, nearly three hours after the close, the same key that returned
+ *     12,591 results for the previous session still returned 403 for that day. The
+ *     free tier serves history, not today, however late you ask.
+ *
+ * `PRICE_PUBLISH_LAG_DAYS` is the second of those, and it is a property of the plan
+ * rather than of the clock — a paid tier would set it to zero.
+ *
+ * Still no exchange calendar: `recentDays` drops weekends, and a holiday answers with
+ * no bars, which is already a normal outcome.
+ */
+export function lastPossibleCloseDay(now: Date = new Date()): ISODate {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: MARKET_TIME_ZONE,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
+  }).formatToParts(now);
+  const at = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "";
+
+  const easternMidnight = new Date(`${at("year")}-${at("month")}-${at("day")}T00:00:00Z`);
+  if (Number(at("hour")) < MARKET_CLOSE_HOUR_ET) easternMidnight.setUTCDate(easternMidnight.getUTCDate() - 1);
+  easternMidnight.setUTCDate(easternMidnight.getUTCDate() - PRICE_PUBLISH_LAG_DAYS);
+  return isoDate(easternMidnight.toISOString());
+}
+
+/** The earlier of two days. Point-in-time anchors may be older than the bell; never newer. */
+export const earlierDay = (a: ISODate, b: ISODate): ISODate => (a < b ? a : b);
 
 /**
  * Calendar days back from `asOf`, newest first, with weekends dropped.

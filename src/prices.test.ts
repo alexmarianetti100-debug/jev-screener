@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { cik, isoDate, ticker, type Entity, type Ticker } from "./observation.ts";
 import {
-  closesToObservations, createPriceClient, parseGroupedBars, polygonUrl, recentDays,
+  closesToObservations, createPriceClient, earlierDay, lastPossibleCloseDay, parseGroupedBars,
+  polygonUrl, recentDays,
 } from "./prices.ts";
 
 const noWait = async (): Promise<void> => {};
@@ -37,6 +38,54 @@ test("recent days skip weekends and run newest first", () => {
   const days = recentDays(isoDate("2026-09-21"), 4);
   assert.deepEqual(days, ["2026-09-21", "2026-09-18", "2026-09-17", "2026-09-16"]);
   assert.deepEqual([...days].sort().reverse(), days, "newest first");
+});
+
+test("the price window stops at the closing bell, not at UTC midnight", () => {
+  // Two effects compose here, and they are not the same thing. The bell decides
+  // whether a session has finished; PRICE_PUBLISH_LAG_DAYS decides whether the plan
+  // will serve it. Expectations below are one trading day behind the bell because the
+  // free tier is — measured at 18:42 ET, which returned 403 for that day while serving
+  // 12,591 results for the one before it.
+
+  // 18:00 Pacific on the 23rd. UTC has already rolled to the 24th, and asking for the
+  // 24th earns a 403 — the same status a revoked key returns, recorded as a source
+  // failure every single evening the scheduler ran.
+  assert.equal(lastPossibleCloseDay(new Date("2026-09-24T01:00:00Z")), "2026-09-22");
+
+  // 09:30 ET, the opening bell: today has not closed.
+  assert.equal(lastPossibleCloseDay(new Date("2026-09-23T13:30:00Z")), "2026-09-21");
+  // 16:00 ET exactly, the bell itself.
+  assert.equal(lastPossibleCloseDay(new Date("2026-09-23T20:00:00Z")), "2026-09-22");
+  // 15:59 ET, one minute short of it.
+  assert.equal(lastPossibleCloseDay(new Date("2026-09-23T19:59:00Z")), "2026-09-21");
+
+  // Winter, when Eastern is UTC-5 rather than UTC-4: the offset is not hardcoded.
+  assert.equal(lastPossibleCloseDay(new Date("2026-01-15T20:30:00Z")), "2026-01-13");
+  assert.equal(lastPossibleCloseDay(new Date("2026-01-15T21:30:00Z")), "2026-01-14");
+
+  // A Saturday anchor is fine: recentDays drops weekends from the window it opens.
+  assert.deepEqual(
+    recentDays(lastPossibleCloseDay(new Date("2026-09-26T21:00:00Z")), 2),
+    ["2026-09-25", "2026-09-24"],
+  );
+});
+
+test("the plan's lag is separate from the bell, and both are honoured", async () => {
+  const { PRICE_PUBLISH_LAG_DAYS } = await import("./constants.ts");
+
+  // Conflating "the session has ended" with "the source will serve it" is what made
+  // the first fix fall one day short: correct about timezones, still 403 every night.
+  // Well after the bell, the answer is still the lag behind it.
+  const afterTheBell = lastPossibleCloseDay(new Date("2026-09-23T22:00:00Z")); // 18:00 ET
+  assert.equal(afterTheBell, "2026-09-22");
+  assert.equal(PRICE_PUBLISH_LAG_DAYS, 1, "a paid tier would set this to zero");
+});
+
+test("a point-in-time anchor may be older than the bell, never newer", () => {
+  // A screen replaying an older date keeps its own asOf; the bell does not drag it forward.
+  assert.equal(earlierDay(isoDate("2026-03-02"), isoDate("2026-09-23")), "2026-03-02");
+  // A screen run today must not ask for closes that have not printed.
+  assert.equal(earlierDay(isoDate("2026-09-24"), isoDate("2026-09-23")), "2026-09-23");
 });
 
 test("a close is knowable on its own date, and only for tickers we track", () => {

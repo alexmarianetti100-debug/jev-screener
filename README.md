@@ -354,14 +354,16 @@ pinned fingerprint.
 
 | `2026-09-22.4+30000` | `577acd7794ca0418` | Price behaviour added to the state | The screener judged growth potential over a horizon while seeing nothing about price beyond a multiple. Momentum, trend and volatility are pure functions of the closes already on file, so they carry a real `knownAt` and full provenance — unlike an indicator fetched from a charting service, which is computed now on a series since adjusted and cannot be reconstructed for a past date. Questions untouched, fingerprint unchanged, but jev sees more. Taken now, five weeks before the first horizon resolves, which is when a break is cheapest. |
 
-**The first measured cohort is run `a0c105d0`**, judged 2026-09-22 at this epoch: 3,962
-companies, 940 included, a full roster persisted. It has been superseded: adding price behaviour
-changed what jev sees, so the cohort `grade` should be read against is the first run at
-`2026-09-22.4+30000`. Superseding a two-dollar run five weeks before any horizon resolves
-is the cheap version of this mistake; discovering the need for it afterwards would not
-have been. Earlier runs remain in the table and remain
-readable, but they answered questions the screener no longer asks, and pooling them with
-what follows would be the exact drift the freeze exists to prevent.
+**The first measured cohort is run `b2a74f45`**, judged 2026-09-28 at this epoch: 3,939
+companies, 802 included, a roster of all 3,939 persisted with momentum on 3,047 of them.
+That is the run `grade` is read against, and the clock starts from it.
+
+It replaced `a0c105d0` from six days earlier, which was superseded by adding price
+behaviour. Superseding a two-dollar run before any horizon resolves is the cheap version
+of that mistake; discovering the need for it afterwards would not have been. Earlier runs
+stay in the table and stay readable, but they answered questions the screener no longer
+asks, and pooling them with what follows would be the exact drift the freeze exists to
+prevent.
 
 Everything before this epoch was development, not measurement. Those runs are still in
 the `runs` table and still readable, but they answered different questions and should

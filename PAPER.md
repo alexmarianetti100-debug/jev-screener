@@ -424,7 +424,7 @@ for — Exxon Mobil Corp among them — are judged without multiples.
 autocorrelated, and repeated cohorts are fewer independent observations than they appear.
 
 **Nothing has been *held* yet.** The first cohort at the frozen question set is run
-`a0c105d0` — 3,962 judged, 940 included, 2026-09-22 — and every horizon in the scorecard
+`b2a74f45` — 3,939 judged, 802 included, 2026-09-28 — and every horizon in the scorecard
 reports `pending` against it. The earliest, one month, resolves in late October.
 
 **The model is a single point of failure.** One vendor, one build, no fallback, and its

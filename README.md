@@ -1,6 +1,16 @@
 # jev stock screener
 
-A screener over the full universe of US operating companies (~4,000–5,000 names) where
+> **This is a live experiment, and it has no results yet.**
+>
+> It runs on a schedule, judges ~3,900 companies a month, and measures itself forward.
+> Every horizon currently reports `pending`. The first real number arrives in **late
+> October 2026**; the primary six-month measure in **March 2027**.
+>
+> What counts as working — and what counts as failing — is written down in
+> [EXPERIMENT.md](EXPERIMENT.md), registered before any data exists so it cannot be
+> adjusted afterwards. Both outcomes get published.
+
+A screener over the full universe of US operating companies (~3,900 evaluable) where
 **TypeScript computes facts and [jev](https://openrouter.ai/~typesafe/jev-latest) makes every
 decision**, exposed as an MCP server so Claude can drive it conversationally.
 
@@ -11,11 +21,36 @@ good, you will not find one — that is the design, not an omission.
 
 > Output is **candidates for human review**. This system never places orders and makes no buy or
 > sell recommendation. Nothing it produces has been validated against realised returns — see
-> [PAPER.md](PAPER.md) for what is and is not known, and [NOTICE](NOTICE).
+> [NOTICE](NOTICE).
 
-[**PAPER.md**](PAPER.md) is the write-up: what the design rule is, what running it against 6.2
-million real observations taught, and the two experiments measuring whether the model judges the
-evidence or the company.
+## Status
+
+| | |
+| --- | --- |
+| Measured cohort | `b2a74f45` — 3,939 judged, 802 included, 2026-09-28 |
+| Epoch (frozen question set) | `2026-09-22.4+30000` |
+| Observations | 6.2M fundamentals + 2.6M daily closes, two years deep |
+| Next cohort | the 1st of each month, automatically |
+| First horizon resolves | ~2026-10-28 (1 month) · **~2027-03-28 (6 month, primary)** |
+| Result so far | **none — every horizon `pending`** |
+| Spend to date | $11.88 |
+
+### What is already known
+
+These are settled, and they are the reason the project exists in its current shape:
+
+- **It cannot be backtested.** The model identifies ~85% of these companies from their
+  filing prose — measured, not assumed — so anything it says about their past is partly
+  recall. There is no historical test here and there will not be one.
+- **It reads the evidence rather than the name.** Rewriting a company's numbers into those
+  of a deteriorating business moved attractiveness by 2.38 against a noise floor of 0.04,
+  and flipped 40 of 40 verdicts. Recognition is not reliance.
+- **Every serious bug was found by running it, not by testing it.** 207 tests never caught
+  any of them. [PAPER.md](PAPER.md) has the table.
+
+### What is not known
+
+Whether any of it predicts anything. That is what the schedule is for.
 
 ## Looking at it
 
@@ -23,7 +58,7 @@ evidence or the company.
 npm run ui        # http://127.0.0.1:7373
 ```
 
-A read-only local view of the last run: all 985 picks, filterable by ticker, sector or
+A read-only local view of the last run: every pick, filterable by ticker, sector or
 evidence, sortable on every column, with a score histogram that makes the compression at
 the top visible at a glance. Clicking a row opens its provenance — every computed metric
 with the date it became knowable, then the raw observations newest-first with the XBRL
@@ -195,12 +230,12 @@ Measured on a live ingest, 2026-09-22:
 | Filers with XBRL data | 20,390 |
 | Observations ingested | 6,207,389 |
 | Database size | 1.9 GB (+ 2.8 GB of cached archives) |
-| **Eligible universe** | **3,962** |
+| **Eligible universe** | **3,939** |
 | Biggest eligibility failures | too few revenue quarters (12,674), 10-K older than 18 months (8,949), no operating cash flow (6,170), no 10-K on file (5,477), foreign issuer or fund (4,156) |
 | Slice + eligibility pass | ~10 s |
 | Judgment | ~12,650 input tokens/company |
 | Eligible filers SEC lists no ticker for | 310 |
-| Included by jev | **985 of 3,962 — 24.9%** |
+| Included by jev | **802 of 3,939 — 20.4%** |
 
 Dated obligations, from the same ingest: 5,466 filers publish next-year debt maturities,
 5,500 the year after, 6,665 a lease schedule, 3,661 a contract liability and 1,739 a

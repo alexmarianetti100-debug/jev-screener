@@ -471,6 +471,20 @@ sweep, both experiments and every false start: **$7.72**.
 
 ---
 
+## This is not finished
+
+Everything above describes an apparatus, and the results section is empty. Every horizon
+in the scorecard reports `pending`; the first resolves in late October 2026 and the
+primary six-month measure in March 2027.
+
+What would count as the judgment layer working — and what would count as it failing — is
+registered in [EXPERIMENT.md](EXPERIMENT.md), written while no data existed so it cannot be
+adjusted to fit what arrives. The likeliest failure is named there explicitly: the model is
+shown price behaviour, and if it cannot beat ranking on momentum alone then it has learned
+to follow the trend rather than to judge businesses.
+
+That result, if it comes, gets published in the same place as the other one.
+
 ## Closing
 
 The interesting result is not the pick list. It is that a system built to make its own

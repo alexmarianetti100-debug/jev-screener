@@ -1,0 +1,4 @@
+This software screens securities. It produces candidates for human review. It
+is not investment advice, it makes no recommendation to buy or sell anything,
+and nothing it outputs has been validated against realised returns. See
+PAPER.md for what is and is not known about whether it works.

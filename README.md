@@ -10,7 +10,8 @@ ranks because of `attractiveness.score`. If you go looking for the rule that dec
 good, you will not find one — that is the design, not an omission.
 
 > Output is **candidates for human review**. This system never places orders and makes no buy or
-> sell recommendation.
+> sell recommendation. Nothing it produces has been validated against realised returns — see
+> [PAPER.md](PAPER.md) for what is and is not known, and [NOTICE](NOTICE).
 
 [**PAPER.md**](PAPER.md) is the write-up: what the design rule is, what running it against 6.2
 million real observations taught, and the two experiments measuring whether the model judges the
